@@ -42,12 +42,3 @@ export interface TagRow {
   color: string;
   created_at: string;
 }
-
-export interface TempEmailRow {
-  id: number;
-  email: string;
-  source: string;
-  remark: string;
-  created_at: string;
-  updated_at: string;
-}

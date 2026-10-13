@@ -37,15 +37,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_group   ON accounts(group_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_refresh ON accounts(last_refreshed_at);
-
-CREATE TABLE IF NOT EXISTS temp_emails (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  email      TEXT NOT NULL UNIQUE,
-  source     TEXT DEFAULT '',
-  remark     TEXT DEFAULT '',
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
+-- The accounts table is always listed newest-first; without this the query falls
+-- back to "USE TEMP B-TREE FOR ORDER BY" on the whole table.
+CREATE INDEX IF NOT EXISTS idx_accounts_created ON accounts(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS tags (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

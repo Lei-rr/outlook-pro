@@ -72,7 +72,6 @@ let state = {
   groups: [],
   tags: [],
   accounts: [],
-  tempEmails: [],
   selectedAccount: null,
   emailList: [],
   selectedEmail: null,
@@ -161,10 +160,6 @@ function renderPage() {
       title.textContent = t('邮件查看');
       renderEmails(content);
       break;
-    case 'temp-emails':
-      title.textContent = t('临时邮箱');
-      renderTempEmails(content);
-      break;
     case 'settings':
       title.textContent = t('系统设置');
       renderSettings(content);
@@ -187,26 +182,25 @@ function pageToolbarHtml(info, actionsHtml) {
 // ========== Dashboard ==========
 async function renderDashboard(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
-  await loadGroups();
-  await loadAccounts();
-  const activeCount = state.accounts.filter(a => a.status === 'active').length;
-  const errorCount = state.accounts.filter(a => a.status === 'error').length;
-  const disabledCount = state.accounts.filter(a => a.status === 'disabled').length;
-  const stats = [
-    { label: t('邮箱账号'), value: state.accounts.length, color: 'var(--primary)', bg: 'var(--primary-bg)', go: "navigate('accounts')", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>' },
+  const [, stats] = await Promise.all([loadGroups(), loadAccountStats()]);
+  const activeCount = stats.status.active || 0;
+  const errorCount = stats.status.error || 0;
+  const disabledCount = stats.status.disabled || 0;
+  const tiles = [
+    { label: t('邮箱账号'), value: stats.total, color: 'var(--primary)', bg: 'var(--primary-bg)', go: "navigate('accounts')", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>' },
     { label: t('分组数量'), value: state.groups.length, color: 'var(--primary-light)', bg: 'rgba(129,140,248,0.1)', go: "navigate('groups')", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>' },
     { label: t('活跃'), value: activeCount, color: 'var(--success)', bg: 'var(--success-bg)', go: "goToAccounts('active')", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>' },
     { label: t('异常'), value: errorCount, color: 'var(--danger)', bg: 'var(--danger-bg)', go: "goToAccounts('error')", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' },
   ];
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:28px;">
-      ${stats.map(s => `<div class="card" style="display:flex;align-items:center;gap:16px;padding:20px 22px;cursor:pointer" onclick="${s.go}" title="${t('点击进入')}">
+      ${tiles.map(s => `<div class="card" style="display:flex;align-items:center;gap:16px;padding:20px 22px;cursor:pointer" onclick="${s.go}" title="${t('点击进入')}">
         <div style="width:44px;height:44px;border-radius:12px;background:${s.bg};display:flex;align-items:center;justify-content:center;color:${s.color};flex-shrink:0">${s.icon}</div>
         <div><div style="font-size:28px;font-weight:700;color:${s.color};line-height:1.1">${s.value}</div><div style="color:var(--text-dim);font-size:12.5px;margin-top:2px">${s.label}</div></div>
       </div>`).join('')}
     </div>
-    ${state.accounts.length > 0 ? dashboardDetailCardsHtml(activeCount, errorCount, disabledCount) : ''}
-    ${state.accounts.length === 0 ? `<div class="card" style="text-align:center;padding:40px">
+    ${stats.total > 0 ? dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount) : ''}
+    ${stats.total === 0 ? `<div class="card" style="text-align:center;padding:40px">
       <div style="font-size:14px;color:var(--text-muted);margin-bottom:12px">${t('还没有添加邮箱账号')}</div>
       <button class="btn btn-primary" onclick="navigate('accounts')">${t('前往添加')}</button>
     </div>` : ''}
@@ -216,8 +210,8 @@ async function renderDashboard(el) {
 // Two glass cards below the stat tiles: account health (status stacked bar +
 // shortcuts to broken accounts) and per-group distribution bars. Pure frontend
 // aggregation over already-loaded state — no extra API calls, free-tier safe.
-function dashboardDetailCardsHtml(activeCount, errorCount, disabledCount) {
-  const total = state.accounts.length;
+function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount) {
+  const total = stats.total;
   // Status palette (reserved, matches badges): shown with label + count, never color alone
   const statuses = [
     { key: 'active', label: t('活跃'), count: activeCount, color: 'var(--success)' },
@@ -234,7 +228,7 @@ function dashboardDetailCardsHtml(activeCount, errorCount, disabledCount) {
     </span>`
   ).join('');
 
-  const errorAccounts = state.accounts.filter(a => a.status === 'error').slice(0, 3);
+  const errorAccounts = stats.errors || [];
   const errorList = errorAccounts.length ? `
     <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:12px">
       <div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">${t('待修复账号（点击直达编辑）')}</div>
@@ -412,6 +406,13 @@ async function deleteTag(id) {
 }
 
 // ========== Accounts ==========
+// Dashboard counters come from a server-side aggregate instead of downloading
+// every account row just to count statuses in the browser.
+async function loadAccountStats() {
+  const res = await api('/accounts/stats');
+  return res?.success ? res.data : { total: 0, status: {}, groups: [], errors: [] };
+}
+
 async function loadAccounts(groupId) {
   const url = groupId ? `/accounts?group_id=${groupId}` : '/accounts';
   const res = await api(url);
@@ -420,9 +421,7 @@ async function loadAccounts(groupId) {
 
 async function renderAccounts(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
-  await loadGroups();
-  await loadTags();
-  await loadAccounts();
+  await Promise.all([loadGroups(), loadTags(), loadAccounts()]);
 
   // Single sticky row: filters + search + count on the left, page actions on the
   // right; the batch bar joins it so selection actions stay visible while the
@@ -942,7 +941,13 @@ async function showEditAccountModal(id) {
       <textarea class="form-textarea" id="mAccToken" rows="3" placeholder="${t('留空保持原值')}">${isError ? '' : ''}</textarea>
       <div style="font-size:11px;color:var(--text-dim);margin-top:4px">${t('当前: {v}（已脱敏）。留空表示不修改，填入新值会覆盖。', { v: esc(a.refresh_token) })}</div>
     </div>
-    <div class="form-group"><label class="form-label">${t('密码')}</label><input class="form-input" id="mAccPwd" value="${esc(a.password || '')}"></div>
+    <div class="form-group">
+      <label class="form-label">${t('密码')}</label>
+      <div style="display:flex;gap:8px">
+        <input class="form-input" id="mAccPwd" placeholder="${t('留空不修改')}" style="flex:1">
+        <button class="btn" type="button" onclick="revealAccountPassword(${a.id}, this)">${t('显示')}</button>
+      </div>
+    </div>
     <div class="form-group"><label class="form-label">${t('分组')}</label><select class="form-select" id="mAccGroup">${state.groups.map(g => `<option value="${g.id}" ${g.id === a.group_id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
     <div class="form-group"><label class="form-label">${t('备注')}</label><input class="form-input" id="mAccRemark" value="${esc(a.remark)}"></div>
     <div class="form-group"><label class="form-label">${t('标签')}</label>
@@ -969,6 +974,16 @@ async function showEditAccountModal(id) {
     toast(r?.error?.message || t('更新失败'), 'error');
     return false;
   });
+}
+
+// The password is deliberately not part of the account detail payload, so it is
+// fetched only when the user explicitly asks to see it.
+async function revealAccountPassword(id, btn) {
+  const res = await api(`/accounts/${id}/password`);
+  if (!res?.success) { toast(res?.error?.message || t('获取账号详情失败'), 'error'); return; }
+  const input = document.getElementById('mAccPwd');
+  if (input) input.value = res.data.password || '';
+  if (btn) btn.disabled = true;
 }
 
 async function testAccount(id, btn) {
@@ -1467,122 +1482,6 @@ async function deleteSelectedEmails() {
   removeEmailsFromList(ids);
 }
 
-// ========== Temp Emails ==========
-async function loadTempEmails() {
-  const res = await api('/temp-emails');
-  if (res?.success) state.tempEmails = res.data || [];
-}
-
-async function renderTempEmails(el) {
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
-  await loadTempEmails();
-
-  const toolbar = pageToolbarHtml(
-    t('{n} 个临时邮箱', { n: state.tempEmails.length }),
-    `<button class="btn btn-primary btn-sm" onclick="generateTempEmail()">${t('+ 生成临时邮箱')}</button>`
-  );
-
-  if (state.tempEmails.length === 0) {
-    el.innerHTML = toolbar + `<div class="empty-state">${t('暂无临时邮箱')}</div>`;
-    return;
-  }
-
-  el.innerHTML = toolbar + `
-    <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;min-height:500px;">
-      <div class="card" style="padding:0;overflow-y:auto;max-height:calc(100vh - 200px)">
-        ${state.tempEmails.map(e => `
-          <div class="email-item" style="display:flex;justify-content:space-between;align-items:center">
-            <div style="cursor:pointer;flex:1;min-width:0" onclick="loadTempMessages(${e.id})">
-              <div style="font-size:13px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.email)}</div>
-              <div style="font-size:11px;color:var(--text-dim)">${formatDate(e.created_at)}</div>
-            </div>
-            <button class="btn btn-sm btn-danger" style="flex-shrink:0;margin-left:8px" onclick="deleteTempEmail(${e.id})">${t('删除')}</button>
-          </div>
-        `).join('')}
-      </div>
-      <div class="card" id="tempMailContent">
-        <div class="empty-state">${t('选择一个临时邮箱查看邮件')}</div>
-      </div>
-    </div>
-  `;
-}
-
-async function generateTempEmail() {
-  const res = await api('/temp-emails', { method: 'POST', body: '{}' });
-  if (res?.success) { toast(res.message || t('生成成功')); navigate('temp-emails'); }
-  else toast(res?.error?.message || t('生成失败'), 'error');
-}
-
-async function deleteTempEmail(id) {
-  if (!confirm(t('确认删除该临时邮箱？'))) return;
-  const res = await api(`/temp-emails/${id}`, { method: 'DELETE' });
-  if (res?.success) { toast(t('已删除')); navigate('temp-emails'); }
-  else toast(res?.error?.message || t('删除失败'), 'error');
-}
-
-async function loadTempMessages(id) {
-  const pane = document.getElementById('tempMailContent');
-  pane.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载邮件...') + '</div>';
-
-  const res = await api(`/temp-emails/${id}/messages`);
-  if (!res?.success) {
-    pane.innerHTML = `<div class="empty-state" style="color:var(--danger)">${esc(tServer(res?.error?.message) || t('获取失败'))}</div>`;
-    return;
-  }
-
-  const emails = res.data?.emails || [];
-  if (emails.length === 0) {
-    pane.innerHTML = `<div class="empty-state">${t('暂无邮件')}</div>`;
-    return;
-  }
-
-  pane.innerHTML = emails.map(e => `
-    <div class="email-item" onclick="viewTempMessage(${id},'${esc(String(e.id))}')">
-      <div class="email-from">${esc(tServer(String(e.from)))}</div>
-      <div class="email-subject">${esc(tServer(String(e.subject)))}</div>
-      <div class="email-preview">${esc(String(e.body_preview))}</div>
-    </div>
-  `).join('');
-}
-
-async function viewTempMessage(emailId, messageId) {
-  const pane = document.getElementById('tempMailContent');
-  pane.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载详情...') + '</div>';
-
-  const res = await api(`/temp-emails/${emailId}/messages/${messageId}`);
-  if (!res?.success) {
-    pane.innerHTML = `<div class="empty-state" style="color:var(--danger)">${t('获取失败')}</div>`;
-    return;
-  }
-
-  const e = res.data;
-  // Render untrusted HTML bodies inside a sandboxed, script-less iframe (same as
-  // the main mailbox detail view) so malicious markup - e.g. <img onerror> - can't
-  // execute in the app origin. Plain-text bodies stay escaped in a <pre>.
-  const isHtml = e.body_type === 'html';
-  const bodyContent = isHtml
-    ? `<iframe id="tempMailFrame" sandbox="allow-same-origin" onload="resizeFrame(this)" style="width:100%;border:none;min-height:300px;background:#fff;border-radius:var(--radius)"></iframe>`
-    : `<pre style="white-space:pre-wrap;font-family:inherit;font-size:14px;line-height:1.7">${esc(String(e.body || ''))}</pre>`;
-  pane.innerHTML = `
-    <div>
-      <button class="btn btn-sm" onclick="loadTempMessages(${emailId})" style="margin-bottom:12px">${t('← 返回列表')}</button>
-      <h3>${esc(tServer(String(e.subject)))}</h3>
-      <div style="color:var(--text-muted);font-size:13px;margin:8px 0">From: ${esc(String(e.from))} → ${esc(String(e.to))}</div>
-      <div style="margin-top:16px">${bodyContent}</div>
-    </div>
-  `;
-
-  if (isHtml) {
-    const frame = document.getElementById('tempMailFrame');
-    if (frame) {
-      const doc = frame.contentDocument;
-      doc.open();
-      doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:sans-serif;font-size:14px;color:#333;margin:12px;}</style></head><body>${e.body || ''}</body></html>`);
-      doc.close();
-    }
-  }
-}
-
 // ========== Settings ==========
 async function renderSettings(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
@@ -1596,10 +1495,6 @@ async function renderSettings(el) {
       <div class="form-group">
         <label class="form-label">${t('登录密码 (当前: {v})', { v: esc(settings.login_password || t('未设置')) })}</label>
         <input class="form-input" id="sPassword" type="password" placeholder="${t('输入新密码（留空不修改）')}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">${t('GPTMail API Key (当前: {v})', { v: esc(settings.gptmail_api_key || t('未设置')) })}</label>
-        <input class="form-input" id="sApiKey" placeholder="${t('输入 API Key')}">
       </div>
       <div class="form-group">
         <label class="form-label">${t('站点标题')}</label>
@@ -1651,14 +1546,14 @@ async function renderSettings(el) {
         </div>
         <div class="form-group" style="flex:1">
           <label class="form-label">${t('刷新窗口（天）')}</label>
-          <input class="form-input" id="sRefreshWindow" type="number" min="1" value="${esc(settings.token_refresh_window_days || '60')}">
+          <input class="form-input" id="sRefreshWindow" type="number" min="1" max="30" value="${esc(Math.min(Number(settings.token_refresh_window_days) || 25, 30))}">
         </div>
       </div>
       <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">${t('上次执行：{v}', { v: esc(tServer(settings.token_refresh_last_result || '尚未执行')) })}</div>
       <div style="background:var(--warning-bg);border:1px solid rgba(245,158,11,0.25);border-radius:8px;padding:12px;margin-bottom:14px;font-size:11.5px;color:var(--text-secondary);line-height:1.8">
         <b style="color:var(--warning)">${t('⚠️ 频率风险（请勿设太频繁）')}</b><br>
         · ${t('<b>微软风控（最重要）</b>：refresh_token 每次刷新都会被微软轮换，高频自动刷新可能触发 Graph 限流（429），对「领来的」账号还可能被微软判定异常活动而<b>锁号</b>。Token 只要每隔几天被用到就不会过期，<b>没必要高频刷，建议间隔 ≥ 12 小时</b>。')}<br>
-        · ${t('<b>刷新窗口</b>：只刷新「距上次刷新超过窗口天数」的账号，其余跳过。每天实际刷新量约为 账号数 ÷ 窗口天数。')}<br>
+        · ${t('<b>刷新窗口</b>：只刷新「距上次刷新超过窗口天数」的账号，其余跳过。<b>必须明显小于 refresh_token 有效期（微软约 90 天滑动过期），上限 30 天</b>，默认 25；设太大会让账号在被刷新前就已过期。每天实际刷新量约为 账号数 ÷ 窗口天数。')}<br>
         · ${t('<b>每批数量</b>：单次最多刷新的账号数，账号多时按「最久未刷新优先」分多轮覆盖。')}
       </div>
       <div style="display:flex;gap:8px">
@@ -1740,11 +1635,19 @@ async function pushNow(btn) {
 }
 
 async function saveRefreshSettings() {
+  const winEl = document.getElementById('sRefreshWindow');
+  let win = Number.parseInt(winEl.value, 10);
+  if (!Number.isFinite(win) || win < 1) win = 25;
+  if (win > 30) {
+    win = 30;
+    toast(t('刷新窗口上限 30 天，已自动调整'), 'error');
+  }
+  winEl.value = String(win);
   const body = {
     token_refresh_enabled: document.getElementById('sRefreshEnabled').checked ? '1' : '0',
     token_refresh_interval_hours: document.getElementById('sRefreshInterval').value.trim() || '6',
     token_refresh_batch: document.getElementById('sRefreshBatch').value.trim() || '200',
-    token_refresh_window_days: document.getElementById('sRefreshWindow').value.trim() || '60',
+    token_refresh_window_days: String(win),
   };
   const res = await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
   if (res?.success) toast(res.message || t('已保存'));
@@ -1776,10 +1679,8 @@ async function clearApiKey() {
 async function saveSettings() {
   const body = {};
   const pwd = document.getElementById('sPassword').value.trim();
-  const apiKey = document.getElementById('sApiKey').value.trim();
   const title = document.getElementById('sSiteTitle').value.trim();
   if (pwd) body.login_password = pwd;
-  if (apiKey) body.gptmail_api_key = apiKey;
   if (title) body.site_title = title;
 
   if (Object.keys(body).length === 0) { toast(t('没有需要更新的设置'), 'error'); return; }

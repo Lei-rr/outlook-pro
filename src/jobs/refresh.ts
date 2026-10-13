@@ -1,4 +1,4 @@
-import type { Config } from '../config.js';
+import { MAX_REFRESH_WINDOW_DAYS, type Config } from '../config.js';
 import { mapLimit, RateLimiter, sleep } from '../core/async.js';
 import type { Repo } from '../db/repo/index.js';
 import { refreshAccessToken } from '../services/graph.js';
@@ -40,16 +40,20 @@ export async function runTokenRefresh(
     if (lastRun && Date.now() - lastRun < intervalHours * 3600_000) return null;
   }
 
-  const windowDays =
-    Number.parseInt(settings.get('token_refresh_window_days') || '', 10) || config.refresh.windowDays;
+  const windowDays = Math.min(
+    Number.parseInt(settings.get('token_refresh_window_days') || '', 10) || config.refresh.windowDays,
+    MAX_REFRESH_WINDOW_DAYS
+  );
   const perRun = Number.parseInt(settings.get('token_refresh_batch') || '', 10) || config.refresh.perRun;
   const concurrency =
     Number.parseInt(settings.get('token_refresh_concurrency') || '', 10) || config.refresh.concurrency;
   const rate =
     Number.parseInt(settings.get('token_refresh_rate_per_sec') || '', 10) || config.refresh.ratePerSec;
 
-  // Only accounts idle longer than the window are due, so each token gets touched
-  // well before Microsoft's ~90-day sliding expiry without hammering the API.
+  // Only accounts idle longer than the window are due. The window is capped at
+  // MAX_REFRESH_WINDOW_DAYS so a token is always rotated while still valid:
+  // Microsoft refresh tokens slide-expire around 90 days, so a 30-day window
+  // keeps a 3x safety margin and never rotates a token that is already dead.
   const cutoff = new Date(Date.now() - windowDays * 86_400_000).toISOString().replace('T', ' ').slice(0, 19);
   const due = accounts.dueForRefresh(cutoff, perRun);
 

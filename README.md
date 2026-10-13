@@ -8,7 +8,6 @@
 - **批量管理**：导入 / 导出 / 删除 / 移组 / 标签（多对多）
 - **邮件读取**：Graph API 实时读取，收件箱 / 垃圾箱 / 已删除 / 聚合视图、搜索、分页、附件下载
 - **Telegram 推送**：轮询新邮件并实时推送
-- **临时邮箱**：集成 GPTMail
 - **对外 API**：API Key 免登录拉取邮件，适合脚本自动取验证码
 - **安全**：scrypt 密码哈希、AES-256-GCM 敏感字段加密、HMAC 会话签名
 - **部署**：Docker + GitHub Action 自动构建推送镜像
@@ -60,19 +59,19 @@ docker compose up -d      # 无需任何配置，默认密码 admin
 | `ENCRYPTION_KEY` | 字段加密密钥 | 自动生成 |
 | `TOKEN_REFRESH_ENABLED` | 定时刷新开关 | `0` |
 | `TOKEN_REFRESH_INTERVAL_HOURS` | 刷新任务最小间隔 | `6` |
-| `TOKEN_REFRESH_WINDOW_DAYS` | 超过该天数未刷新的账号才会被刷 | `60` |
+| `TOKEN_REFRESH_WINDOW_DAYS` | 超过该天数未刷新的账号才会被刷（上限 `30`） | `25` |
 | `TOKEN_REFRESH_PER_RUN` | 单次最多刷新账号数 | `200` |
 | `TOKEN_REFRESH_CONCURRENCY` | 刷新并发数 | `10` |
 | `TOKEN_REFRESH_RATE_PER_SEC` | 刷新全局限速（req/s） | `10` |
 | `PUSH_INTERVAL_MINUTES` | 邮件推送轮询间隔 | `1` |
-| `GPTMAIL_API_KEY` | 临时邮箱 API Key（可选） | 空 |
 
 ## 定时刷新模型
 
-微软 refresh_token 是滑动过期（约 90 天，每次使用续期）。因此不需要高频全量刷新：
+微软 refresh_token 是滑动过期（约 90 天，每次使用续期），但**长期不用的号仍会失效**，所以窗口必须明显小于有效期，否则账号会在被刷新前就已经过期：
 
 - 只刷新「距上次刷新超过 `TOKEN_REFRESH_WINDOW_DAYS` 天」的账号，其余跳过
-- 每天实际需要刷新的账号 ≈ 总数 ÷ 窗口天数（5000 个账号、60 天窗口 ≈ 每天 83 个）
+- 窗口默认 `25` 天，硬上限 `30` 天（约 90 天有效期的 1/3，留足安全余量）；超过上限会被自动收敛到 30
+- 每天实际需要刷新的账号 ≈ 总数 ÷ 窗口天数（8000 个账号、25 天窗口 ≈ 每天 320 个）
 - 并发 + 全局限速 + 429 指数退避，避免触发微软风控
 
 设置页也可在运行时调整开关、间隔、批量、窗口与并发，无需重启。

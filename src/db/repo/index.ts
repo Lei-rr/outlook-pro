@@ -4,7 +4,6 @@ import { groupsRepo } from './groups.js';
 import { pushStateRepo } from './pushState.js';
 import { settingsRepo } from './settings.js';
 import { tagsRepo } from './tags.js';
-import { tempEmailsRepo } from './tempEmails.js';
 
 export function createRepo(db: Database.Database, key: Buffer) {
   const ctx = { db, key };
@@ -14,7 +13,6 @@ export function createRepo(db: Database.Database, key: Buffer) {
     accounts: accountsRepo(ctx),
     groups: groupsRepo(ctx),
     tags: tagsRepo(ctx),
-    tempEmails: tempEmailsRepo(ctx),
     pushState: pushStateRepo(ctx),
   };
 }

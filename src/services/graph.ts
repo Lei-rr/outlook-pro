@@ -41,7 +41,7 @@ function redact(msg: string): string {
 export async function refreshAccessToken(
   clientId: string,
   refreshToken: string
-): Promise<{ token?: string; newRefreshToken?: string; error?: GraphError }> {
+): Promise<{ token?: string; newRefreshToken?: string; expiresIn?: number; error?: GraphError }> {
   try {
     const res = await fetch(TOKEN_URL, {
       method: 'POST',
@@ -66,8 +66,12 @@ export async function refreshAccessToken(
       };
     }
 
-    const data = (await res.json()) as { access_token: string; refresh_token?: string };
-    return { token: data.access_token, newRefreshToken: data.refresh_token };
+    const data = (await res.json()) as {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+    return { token: data.access_token, newRefreshToken: data.refresh_token, expiresIn: data.expires_in };
   } catch (e) {
     return {
       error: { code: 'NETWORK_ERROR', message: `网络错误: ${e instanceof Error ? e.message : 'unknown'}` },

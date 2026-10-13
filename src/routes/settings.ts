@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { MAX_REFRESH_WINDOW_DAYS } from '../config.js';
 import { badRequest, ok } from '../core/http.js';
 import { hashPassword, randomHex } from '../core/crypto.js';
 import { maskToken } from '../core/validate.js';
@@ -9,7 +10,7 @@ import type { AppEnv } from '../types.js';
 
 const settings = new Hono<AppEnv>();
 
-const SECRET_KEYS = new Set(['gptmail_api_key', 'telegram_bot_token']);
+const SECRET_KEYS = new Set(['telegram_bot_token']);
 
 // Plain (non-secret) settings the UI may write, keyed by the label shown in messages.
 const PLAIN_KEYS: Record<string, string> = {
@@ -79,7 +80,14 @@ settings.put('/', async (c) => {
 
   for (const [key, label] of Object.entries(PLAIN_KEYS)) {
     if (body[key] !== undefined) {
-      repo.settings.set(key, String(body[key]).trim());
+      let value = String(body[key]).trim();
+      // The refresh window must stay below Microsoft's ~90-day token expiry.
+      if (key === 'token_refresh_window_days') {
+        const days = Number.parseInt(value, 10);
+        if (!Number.isFinite(days) || days < 1) return badRequest('刷新窗口需为不小于 1 的整数');
+        value = String(Math.min(days, MAX_REFRESH_WINDOW_DAYS));
+      }
+      repo.settings.set(key, value);
       updated.push(label);
     }
   }
@@ -88,7 +96,7 @@ settings.put('/', async (c) => {
   for (const key of SECRET_KEYS) {
     if (body[key] !== undefined && !String(body[key]).includes('*')) {
       repo.settings.set(key, String(body[key]).trim());
-      updated.push(key === 'gptmail_api_key' ? 'GPTMail API Key' : 'Telegram Bot Token');
+      updated.push('Telegram Bot Token');
     }
   }
 

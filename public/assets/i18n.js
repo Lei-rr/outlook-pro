@@ -20,7 +20,6 @@ var I18N_EN = {
   '分组管理': 'Groups',
   '标签管理': 'Tags',
   '邮件查看': 'Emails',
-  '临时邮箱': 'Temp Mail',
   '系统设置': 'Settings',
   '退出登录': 'Log out',
   '浅色': 'Light',
@@ -46,7 +45,6 @@ var I18N_EN = {
   '删除失败': 'Delete failed',
   '更新失败': 'Update failed',
   '保存失败': 'Save failed',
-  '获取失败': 'Fetch failed',
   '取消': 'Cancel',
   '确定': 'OK',
   '处理中...': 'Processing...',
@@ -215,6 +213,8 @@ var I18N_EN = {
   '留空保持原值': 'Leave blank to keep the current value',
   '当前: {v}（已脱敏）。留空表示不修改，填入新值会覆盖。': 'Current: {v} (masked). Leave blank to keep it; a new value overwrites it.',
   '密码': 'Password',
+  '留空不修改': 'Leave blank to keep the current value',
+  '显示': 'Show',
   '暂无标签，可去「标签管理」创建': 'No tags yet - create them on the Tags page',
 
   // --- Emails page ---
@@ -250,24 +250,12 @@ var I18N_EN = {
   '加载附件...': 'Loading attachments...',
   '附件 ({n})': 'Attachments ({n})',
   '获取邮件失败': 'Failed to fetch emails',
-
-  // --- Temp emails ---
-  '{n} 个临时邮箱': '{n} temp mailboxes',
-  '+ 生成临时邮箱': '+ New Temp Email',
-  '暂无临时邮箱': 'No temp mailboxes yet',
-  '选择一个临时邮箱查看邮件': 'Select a temp mailbox to view its messages',
-  '生成成功': 'Created',
   '生成失败': 'Create failed',
-  '确认删除该临时邮箱？': 'Delete this temp mailbox?',
-  '暂无邮件': 'No messages',
-  '← 返回列表': '← Back to list',
 
   // --- Settings page ---
   '登录密码 (当前: {v})': 'Login password (current: {v})',
   '未设置': 'not set',
   '输入新密码（留空不修改）': 'New password (leave blank to keep)',
-  'GPTMail API Key (当前: {v})': 'GPTMail API Key (current: {v})',
-  '输入 API Key': 'Enter API key',
   '站点标题': 'Site title',
   '保存设置': 'Save Settings',
   '对外 API': 'External API',
@@ -293,8 +281,9 @@ var I18N_EN = {
   '⚠️ 频率风险（请勿设太频繁）': '⚠️ Frequency risks (do not set it too often)',
   '<b>微软风控（最重要）</b>：refresh_token 每次刷新都会被微软轮换，高频自动刷新可能触发 Graph 限流（429），对「领来的」账号还可能被微软判定异常活动而<b>锁号</b>。Token 只要每隔几天被用到就不会过期，<b>没必要高频刷，建议间隔 ≥ 12 小时</b>。':
     '<b>Microsoft risk control (most important)</b>: Microsoft rotates the refresh_token on every refresh. High-frequency auto-refresh can trigger Graph throttling (429), and for third-party-sourced accounts may be flagged as abnormal activity and get the account <b>locked</b>. A token stays valid as long as it is used every few days - <b>there is no need to refresh often; interval ≥ 12 hours recommended</b>.',
-  '<b>刷新窗口</b>：只刷新「距上次刷新超过窗口天数」的账号，其余跳过。每天实际刷新量约为 账号数 ÷ 窗口天数。':
-    '<b>Refresh window</b>: only accounts idle longer than the window (in days) are refreshed; the rest are skipped. Daily volume is roughly accounts ÷ window days.',
+  '<b>刷新窗口</b>：只刷新「距上次刷新超过窗口天数」的账号，其余跳过。<b>必须明显小于 refresh_token 有效期（微软约 90 天滑动过期），上限 30 天</b>，默认 25；设太大会让账号在被刷新前就已过期。每天实际刷新量约为 账号数 ÷ 窗口天数。':
+    '<b>Refresh window</b>: only accounts idle longer than the window (in days) are refreshed; the rest are skipped. It <b>must stay well below the refresh_token lifetime (Microsoft slides it around 90 days), capped at 30 days</b> - default 25; set it too large and accounts expire before being refreshed. Daily volume is roughly accounts ÷ window days.',
+  '刷新窗口上限 30 天，已自动调整': 'Refresh window is capped at 30 days - adjusted automatically',
   '<b>每批数量</b>：单次最多刷新的账号数，账号多时按「最久未刷新优先」分多轮覆盖。':
     '<b>Batch size</b>: the max number of accounts refreshed per run; with many accounts they are covered in rounds, least-recently-refreshed first.',
   '立即刷新一批': 'Refresh Now',
@@ -396,12 +385,7 @@ var SERVER_EN = {
   '标签不存在': 'Tag not found',
   '更新失败，标签名可能已存在': 'Update failed - the tag name may already exist',
   '标签已删除': 'Tag deleted',
-  'GPTMail API Key 未配置': 'GPTMail API key not configured',
-  '生成临时邮箱失败': 'Failed to create the temp mailbox',
-  '生成临时邮箱失败，API 返回异常': 'Failed to create the temp mailbox - unexpected API response',
-  '临时邮箱创建成功': 'Temp mailbox created',
-  '临时邮箱不存在': 'Temp mailbox not found',
-  '临时邮箱已删除': 'Temp mailbox deleted',
+  '刷新窗口需为不小于 1 的整数': 'The refresh window must be an integer of at least 1',
   '尚未执行': 'Not run yet',
 };
 

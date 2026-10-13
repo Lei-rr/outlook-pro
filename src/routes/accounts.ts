@@ -1,45 +1,34 @@
 import { Hono } from 'hono';
 import { badRequest, notFound, ok } from '../core/http.js';
 import { isValidEmail, maskToken } from '../core/validate.js';
-import type { AccountRow, AccountWithGroup } from '../db/repo/types.js';
-import { refreshAccountToken } from '../services/account.js';
+import type { AccountRow } from '../db/repo/types.js';
+import { invalidateTokenCache, refreshAccountToken } from '../services/account.js';
 import type { AppEnv } from '../types.js';
 
 const accounts = new Hono<AppEnv>();
 
-// Public shape of an account: secrets are masked on the way out.
-function safeAccount(acc: AccountRow) {
-  return {
-    id: acc.id,
-    email: acc.email,
-    client_id: maskToken(acc.client_id),
-    refresh_token: maskToken(acc.refresh_token),
-    group_id: acc.group_id,
-    remark: acc.remark,
-    status: acc.status,
-    last_refreshed_at: acc.last_refreshed_at,
-    refresh_fail_count: acc.refresh_fail_count,
-    created_at: acc.created_at,
-    updated_at: acc.updated_at,
-  };
-}
-
+// Table listing. Secrets are deliberately absent: the UI never renders them here
+// (the edit modal fetches /accounts/:id instead), so reading them would force a
+// decrypt of every row on every page load for nothing.
 accounts.get('/', (c) => {
-  const rows = c.env.repo.accounts.list({
+  const rows = c.env.repo.accounts.listForTable({
     groupId: c.req.query('group_id') ? Number(c.req.query('group_id')) : undefined,
     keyword: c.req.query('keyword') || undefined,
     tagId: c.req.query('tag_id') ? Number(c.req.query('tag_id')) : undefined,
   });
   const tags = c.env.repo.tags.forAccounts(rows.map((r) => r.id));
 
-  const data = rows.map((r: AccountWithGroup) => ({
-    ...safeAccount(r),
+  const data = rows.map((r) => ({
+    ...r,
     group_name: r.group_name ?? '默认分组',
     group_color: r.group_color ?? '#2563eb',
     tags: tags.get(r.id) ?? [],
   }));
   return ok(data);
 });
+
+// Dashboard aggregates. Declared before /:id so "stats" is not captured as an id.
+accounts.get('/stats', (c) => ok(c.env.repo.accounts.stats()));
 
 accounts.post('/', async (c) => {
   const { repo } = c.env;
@@ -139,6 +128,8 @@ accounts.post('/batch', async (c) => {
   if (action === 'move' && body.group_id === undefined) return badRequest('缺少目标分组');
 
   c.env.repo.accounts.batch(body.ids, action, body.group_id);
+  // Deleted ids must not keep serving a cached access token.
+  if (action === 'delete') invalidateTokenCache();
   const labels = { delete: '删除', move: '移动', enable: '启用', disable: '停用' };
   return ok(null, `已${labels[action]} ${body.ids.length} 个账号`);
 });
@@ -150,14 +141,34 @@ accounts.get('/:id', (c) => {
   const tags = c.env.repo.tags.forAccount(id);
 
   const group = c.env.repo.groups.get(acc.group_id);
+  // Explicit field list instead of spreading the row: credentials (and any future
+  // column) can't leak into this payload by accident. The password is not part of
+  // the detail payload at all - it has its own on-demand endpoint below.
   return ok({
-    ...acc,
+    id: acc.id,
+    email: acc.email,
+    client_id: acc.client_id,
     refresh_token: maskToken(acc.refresh_token),
+    group_id: acc.group_id,
     group_name: group?.name ?? '默认分组',
     group_color: group?.color ?? '#2563eb',
+    remark: acc.remark,
+    status: acc.status,
+    last_refreshed_at: acc.last_refreshed_at,
+    refresh_fail_count: acc.refresh_fail_count,
+    created_at: acc.created_at,
+    updated_at: acc.updated_at,
     tags,
     tag_ids: tags.map((t) => t.id),
   });
+});
+
+// Plaintext password, only on explicit request (the "show" button in the edit
+// modal). Keeps a routine detail load from carrying a login credential.
+accounts.get('/:id/password', (c) => {
+  const acc = c.env.repo.accounts.get(Number(c.req.param('id')));
+  if (!acc) return notFound('账号不存在');
+  return ok({ password: acc.password });
 });
 
 accounts.put('/:id', async (c) => {
@@ -187,16 +198,19 @@ accounts.put('/:id', async (c) => {
     return ok(null, '状态更新成功');
   }
 
+  // A masked placeholder ("abcd****wxyz") must never be written back as if it were
+  // a real credential; treat anything containing '*' as "not modified".
+  const real = (v: string | undefined) => (v && !v.includes('*') ? v.trim() : undefined);
   const email = body.email?.trim() ?? existing.email;
-  const clientId = body.client_id?.trim() ?? existing.client_id;
-  const refreshToken = body.refresh_token?.trim() ?? existing.refresh_token;
+  const clientId = real(body.client_id) ?? existing.client_id;
+  const refreshToken = real(body.refresh_token) ?? existing.refresh_token;
   if (!email || !clientId || !refreshToken) return badRequest('邮箱、Client ID 和 Refresh Token 不能为空');
   if (!isValidEmail(email)) return badRequest('邮箱格式不正确');
 
   // A freshly supplied refresh_token clears a stale 'error' verdict; a deliberate
   // 'disabled' is never auto-revived.
   const status =
-    body.status ?? (body.refresh_token?.trim() && existing.status === 'error' ? 'active' : existing.status);
+    body.status ?? (real(body.refresh_token) && existing.status === 'error' ? 'active' : existing.status);
 
   try {
     repo.accounts.update(id, {
@@ -208,6 +222,8 @@ accounts.put('/:id', async (c) => {
       remark: body.remark ?? existing.remark,
       status,
     });
+    // Credentials may have changed; drop the cached access token for this account.
+    invalidateTokenCache(id);
     return ok(null, '账号更新成功');
   } catch {
     return badRequest('更新失败，邮箱可能已存在');
@@ -218,6 +234,7 @@ accounts.delete('/:id', (c) => {
   const id = Number(c.req.param('id'));
   if (!c.env.repo.accounts.get(id)) return notFound('账号不存在');
   c.env.repo.accounts.remove(id);
+  invalidateTokenCache(id);
   return ok(null, '账号已删除');
 });
 

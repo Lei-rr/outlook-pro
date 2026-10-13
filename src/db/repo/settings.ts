@@ -2,7 +2,7 @@ import { decryptField, encryptField } from '../../core/crypto.js';
 import type { Ctx } from './types.js';
 
 // Secrets stored in settings that must be encrypted at rest.
-const SECRET_KEYS = new Set(['telegram_bot_token', 'gptmail_api_key']);
+const SECRET_KEYS = new Set(['telegram_bot_token']);
 
 export function settingsRepo({ db, key }: Ctx) {
   return {

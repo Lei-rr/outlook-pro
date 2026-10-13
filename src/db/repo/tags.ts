@@ -1,5 +1,9 @@
 import type { Ctx, TagRow } from './types.js';
 
+// SQLite caps a single statement at 32766 bound parameters, so account id lists
+// are chunked rather than inlined into one huge IN (...).
+const ID_CHUNK = 900;
+
 export function tagsRepo({ db }: Ctx) {
   return {
     list(): (TagRow & { account_count: number })[] {
@@ -41,19 +45,21 @@ export function tagsRepo({ db }: Ctx) {
     // Batch-load tags for a set of accounts to avoid an N+1 query.
     forAccounts(ids: number[]): Map<number, { id: number; name: string; color: string }[]> {
       const map = new Map<number, { id: number; name: string; color: string }[]>();
-      if (!ids.length) return map;
-      const placeholders = ids.map(() => '?').join(',');
-      const rows = db
-        .prepare(
-          `SELECT at.account_id, t.id, t.name, t.color
-           FROM account_tags at JOIN tags t ON t.id = at.tag_id
-           WHERE at.account_id IN (${placeholders}) ORDER BY t.name`
-        )
-        .all(...ids) as { account_id: number; id: number; name: string; color: string }[];
-      for (const r of rows) {
-        const list = map.get(r.account_id) ?? [];
-        list.push({ id: r.id, name: r.name, color: r.color });
-        map.set(r.account_id, list);
+      for (let i = 0; i < ids.length; i += ID_CHUNK) {
+        const slice = ids.slice(i, i + ID_CHUNK);
+        const placeholders = slice.map(() => '?').join(',');
+        const rows = db
+          .prepare(
+            `SELECT at.account_id, t.id, t.name, t.color
+             FROM account_tags at JOIN tags t ON t.id = at.tag_id
+             WHERE at.account_id IN (${placeholders}) ORDER BY t.name`
+          )
+          .all(...slice) as { account_id: number; id: number; name: string; color: string }[];
+        for (const r of rows) {
+          const list = map.get(r.account_id) ?? [];
+          list.push({ id: r.id, name: r.name, color: r.color });
+          map.set(r.account_id, list);
+        }
       }
       return map;
     },

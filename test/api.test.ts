@@ -65,12 +65,38 @@ describe('accounts api', () => {
       env as never
     );
     expect(created.status).toBe(200);
+    const accountId = ((await created.json()) as { data: { id: number } }).data.id;
 
     const list = await app.request('/api/accounts', { headers: auth }, env as never);
-    const listBody = (await list.json()) as { data: { email: string; refresh_token: string }[] };
+    const listBody = (await list.json()) as { data: { email: string; refresh_token?: string }[] };
     expect(listBody.data).toHaveLength(1);
     expect(listBody.data[0]!.email).toBe('user@outlook.com');
-    expect(listBody.data[0]!.refresh_token).toBe('****'); // masked in list
+    // Secrets are omitted from the list (the edit modal reads /accounts/:id), so
+    // the endpoint never has to decrypt every row.
+    expect(listBody.data[0]!.refresh_token).toBeUndefined();
+
+    const stats = await app.request('/api/accounts/stats', { headers: auth }, env as never);
+    const statsBody = (await stats.json()) as { data: { total: number; status: Record<string, number> } };
+    expect(statsBody.data.total).toBe(1);
+    expect(statsBody.data.status.active).toBe(1);
+
+    // Detail payload must not carry the plaintext password; the token stays masked.
+    const detail = await app.request(`/api/accounts/${accountId}`, { headers: auth }, env as never);
+    const detailBody = (await detail.json()) as { data: Record<string, unknown> };
+    expect(detailBody.data.password).toBeUndefined();
+    expect(detailBody.data.refresh_token).toBe('****');
+
+    // ...it is only served by its own on-demand endpoint.
+    const pwd = await app.request(`/api/accounts/${accountId}/password`, { headers: auth }, env as never);
+    const pwdBody = (await pwd.json()) as { data: { password: string } };
+    expect(pwdBody.data.password).toBe('pw');
+
+    const noStore = await app.request('/api/accounts/stats', { headers: auth }, env as never);
+    expect(noStore.headers.get('cache-control')).toBe('no-store');
+
+    // The public endpoints must be covered too, not just the session-gated ones.
+    const publicNoStore = await app.request('/api/auth/me', {}, env as never);
+    expect(publicNoStore.headers.get('cache-control')).toBe('no-store');
 
     const exported = await app.request('/api/accounts/export', { headers: auth }, env as never);
     const exportBody = (await exported.json()) as { data: { content: string; count: number } };

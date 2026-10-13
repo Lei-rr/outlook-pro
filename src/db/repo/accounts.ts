@@ -29,30 +29,56 @@ function decrypt(row: AccountRow, key: Buffer): AccountRow {
   };
 }
 
+export interface AccountListRow {
+  id: number;
+  email: string;
+  group_id: number;
+  remark: string;
+  status: string;
+  last_refreshed_at: string;
+  refresh_fail_count: number;
+  created_at: string;
+  updated_at: string;
+  group_name: string;
+  group_color: string;
+}
+
+export interface AccountStats {
+  total: number;
+  status: Record<string, number>;
+  groups: { group_id: number; count: number }[];
+  errors: { id: number; email: string }[];
+}
+
+// Shared WHERE/JOIN builder for the account list queries.
+function buildFilter(filter: { groupId?: number; keyword?: string; tagId?: number }) {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  let join = '';
+
+  if (filter.tagId) {
+    join += ' JOIN account_tags at ON at.account_id = a.id';
+    conditions.push('at.tag_id = ?');
+    params.push(filter.tagId);
+  }
+  if (filter.groupId) {
+    conditions.push('a.group_id = ?');
+    params.push(filter.groupId);
+  }
+  if (filter.keyword) {
+    conditions.push('(a.email LIKE ? OR a.remark LIKE ?)');
+    params.push(`%${filter.keyword}%`, `%${filter.keyword}%`);
+  }
+
+  return { join, where: conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '', params };
+}
+
 export function accountsRepo({ db, key }: Ctx) {
   const enc = (v: string) => encryptField(v, key);
 
   return {
     list(filter: { groupId?: number; keyword?: string; tagId?: number } = {}): AccountWithGroup[] {
-      const conditions: string[] = [];
-      const params: unknown[] = [];
-      let join = '';
-
-      if (filter.tagId) {
-        join += ' JOIN account_tags at ON at.account_id = a.id';
-        conditions.push('at.tag_id = ?');
-        params.push(filter.tagId);
-      }
-      if (filter.groupId) {
-        conditions.push('a.group_id = ?');
-        params.push(filter.groupId);
-      }
-      if (filter.keyword) {
-        conditions.push('(a.email LIKE ? OR a.remark LIKE ?)');
-        params.push(`%${filter.keyword}%`, `%${filter.keyword}%`);
-      }
-
-      const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
+      const { join, where, params } = buildFilter(filter);
       const rows = db
         .prepare(
           `SELECT a.*, g.name AS group_name, g.color AS group_color
@@ -61,6 +87,46 @@ export function accountsRepo({ db, key }: Ctx) {
         )
         .all(...params) as AccountWithGroup[];
       return rows.map((r) => ({ ...decrypt(r, key), group_name: r.group_name, group_color: r.group_color }));
+    },
+
+    // Table listing for the accounts page. The secret columns are deliberately
+    // not read: the UI only ever shows them masked, so decrypting ~24k AES fields
+    // per request (the single biggest cost in this endpoint) would be pure waste.
+    listForTable(filter: { groupId?: number; keyword?: string; tagId?: number } = {}): AccountListRow[] {
+      const { join, where, params } = buildFilter(filter);
+      return db
+        .prepare(
+          `SELECT a.id, a.email, a.group_id, a.remark, a.status, a.last_refreshed_at,
+                  a.refresh_fail_count, a.created_at, a.updated_at,
+                  g.name AS group_name, g.color AS group_color
+           FROM accounts a LEFT JOIN groups g ON a.group_id = g.id${join}${where}
+           ORDER BY a.created_at DESC`
+        )
+        .all(...params) as AccountListRow[];
+    },
+
+    // Aggregates for the dashboard: a few hundred bytes instead of shipping every
+    // account row (and decrypting it) just to count statuses on the client.
+    stats(): AccountStats {
+      const statusRows = db
+        .prepare('SELECT status, COUNT(*) AS count FROM accounts GROUP BY status')
+        .all() as { status: string; count: number }[];
+      const status: Record<string, number> = {};
+      let total = 0;
+      for (const r of statusRows) {
+        status[r.status] = r.count;
+        total += r.count;
+      }
+      return {
+        total,
+        status,
+        groups: db
+          .prepare('SELECT group_id, COUNT(*) AS count FROM accounts GROUP BY group_id')
+          .all() as { group_id: number; count: number }[],
+        errors: db
+          .prepare("SELECT id, email FROM accounts WHERE status = 'error' ORDER BY updated_at DESC LIMIT 3")
+          .all() as { id: number; email: string }[],
+      };
     },
 
     get(id: number): AccountRow | null {

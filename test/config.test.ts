@@ -56,4 +56,10 @@ describe('config', () => {
     const c = loadConfig({ DATA_DIR: tmp(), ENCRYPTION_KEY: 'short-pass' });
     expect(c.encryptionKey).toHaveLength(32);
   });
+
+  it('caps the refresh window at 30 days so tokens are rotated before they expire', () => {
+    expect(loadConfig({ DATA_DIR: tmp(), TOKEN_REFRESH_WINDOW_DAYS: '60' }).refresh.windowDays).toBe(30);
+    expect(loadConfig({ DATA_DIR: tmp(), TOKEN_REFRESH_WINDOW_DAYS: '999' }).refresh.windowDays).toBe(30);
+    expect(loadConfig({ DATA_DIR: tmp() }).refresh.windowDays).toBe(25);
+  });
 });

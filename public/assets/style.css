@@ -522,9 +522,14 @@ tr:hover td { background: var(--bg-hover); }
 .page-toolbar .pt-info { font-size: 12.5px; color: var(--text-dim); }
 .page-toolbar .pt-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
 
-/* Settings page: cards flow into responsive columns (wide screens 2-3 cols,
-   narrow screens 1 col) instead of a single stacked column. */
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+/* Settings page: masonry-style flow via CSS multi-column. Grid rows size
+   themselves to the tallest card in the row, so a short card (e.g. Telegram
+   push) gets pushed below a tall neighbour; columns pack each card tight
+   against the one above it instead. `column-count: 3` caps the count while
+   `column-width: 320px` is the minimum, so narrow viewports drop to 2 or 1
+   column automatically. */
+.settings-grid { column-count: 3; column-width: 320px; column-gap: 16px; }
+.settings-grid > .card { break-inside: avoid; -webkit-column-break-inside: avoid; }
 
 /* Sticky page toolbar (accounts page). The accounts layout is viewport-fit
    (table scrolls internally), so this rarely engages; when the page does

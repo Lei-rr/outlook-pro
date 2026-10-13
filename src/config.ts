@@ -18,8 +18,12 @@ export interface Config {
     ratePerSec: number;
   };
   pushIntervalMinutes: number;
-  gptmailApiKey: string;
 }
+
+// Microsoft refresh tokens expire on a ~90-day sliding window, so the refresh
+// window must stay well below that. 30 days keeps a 3x safety margin; anything
+// larger risks rotating a token that is already dead.
+export const MAX_REFRESH_WINDOW_DAYS = 30;
 
 // Accept a 64-char hex key directly, otherwise derive 32 bytes from any passphrase.
 function deriveKey(raw: string): Buffer {
@@ -74,12 +78,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     refresh: {
       enabled: bool(env.TOKEN_REFRESH_ENABLED, false),
       intervalHours: num(env.TOKEN_REFRESH_INTERVAL_HOURS, 6, 1),
-      windowDays: num(env.TOKEN_REFRESH_WINDOW_DAYS, 60, 1),
+      windowDays: Math.min(num(env.TOKEN_REFRESH_WINDOW_DAYS, 25, 1), MAX_REFRESH_WINDOW_DAYS),
       perRun: num(env.TOKEN_REFRESH_PER_RUN, 200, 1),
       concurrency: num(env.TOKEN_REFRESH_CONCURRENCY, 10, 1),
       ratePerSec: num(env.TOKEN_REFRESH_RATE_PER_SEC, 10, 1),
     },
     pushIntervalMinutes: num(env.PUSH_INTERVAL_MINUTES, 1, 1),
-    gptmailApiKey: env.GPTMAIL_API_KEY || '',
   };
 }

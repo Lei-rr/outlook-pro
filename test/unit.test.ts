@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   decryptField,
   encryptField,
@@ -108,5 +108,38 @@ describe('repo', () => {
     const raw = db.prepare("SELECT value FROM settings WHERE key = 'telegram_bot_token'").get() as { value: string };
     expect(raw.value.startsWith('v1:')).toBe(true);
     expect(repo.settings.get('telegram_bot_token')).toBe('bot-secret');
+  });
+});
+
+describe('access token cache', () => {
+  it('reuses a live token instead of re-authenticating on every call', async () => {
+    vi.resetModules();
+    const refreshAccessToken = vi.fn(async () => ({
+      token: 'access-1',
+      newRefreshToken: 'rt2',
+      expiresIn: 3600,
+    }));
+    vi.doMock('../src/services/graph.js', () => ({ refreshAccessToken }));
+
+    const { refreshAccountToken, invalidateTokenCache } = await import('../src/services/account.js');
+    const { repo } = makeRepo();
+    const id = repo.accounts.create({ email: 'cache@b.c', client_id: 'c', refresh_token: 'r' });
+
+    await refreshAccountToken(repo, repo.accounts.get(id)!);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+
+    // Inside the TTL the token is served from cache: no extra OAuth round trip,
+    // no redundant DB write.
+    const again = await refreshAccountToken(repo, repo.accounts.get(id)!);
+    expect(again.token).toBe('access-1');
+    expect(refreshAccessToken).toHaveBeenCalledTimes(1);
+
+    // New credentials must force a fresh token.
+    invalidateTokenCache(id);
+    await refreshAccountToken(repo, repo.accounts.get(id)!);
+    expect(refreshAccessToken).toHaveBeenCalledTimes(2);
+
+    vi.doUnmock('../src/services/graph.js');
+    vi.resetModules();
   });
 });
