@@ -240,7 +240,7 @@ function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount)
         </div>`).join('')}
       ${errorCount > 3 ? `<div style="font-size:11px;color:var(--text-dim)">${t('还有 {n} 个异常账号，', { n: errorCount - 3 })}<a style="cursor:pointer;color:var(--primary)" onclick="goToAccounts('error')">${t('查看全部')}</a></div>` : ''}
     </div>`
-    : '';
+    : `<div style="margin-top:16px;font-size:12.5px;color:var(--success)">${t('✓ 所有账号授权状态正常')}</div>`;
 
   // Per-group bars: color follows each group's own user-assigned color
   const groups = [...state.groups].sort((a, b) => (b.account_count ?? 0) - (a.account_count ?? 0));

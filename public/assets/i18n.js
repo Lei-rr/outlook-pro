@@ -69,6 +69,7 @@ var I18N_EN = {
   '去修复 →': 'Fix →',
   '还有 {n} 个异常账号，': '{n} more accounts with errors, ',
   '查看全部': 'view all',
+  '✓ 所有账号授权状态正常': '✓ All accounts are authorized and healthy',
   '分组账号分布': 'Accounts per group',
   '暂无分组数据': 'No group data yet',
   '其余 {g} 个分组共 {n} 个账号': '{n} accounts in {g} more groups',
