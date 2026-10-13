@@ -1,34 +1,43 @@
 import { Hono } from 'hono';
 import { badRequest, notFound, ok } from '../core/http.js';
-import { isValidEmail, maskToken } from '../core/validate.js';
-import type { AccountRow } from '../db/repo/types.js';
+import { intParam, isValidEmail, maskToken } from '../core/validate.js';
 import { invalidateTokenCache, refreshAccountToken } from '../services/account.js';
 import type { AppEnv } from '../types.js';
 
 const accounts = new Hono<AppEnv>();
 
-// Table listing. Secrets are deliberately absent: the UI never renders them here
-// (the edit modal fetches /accounts/:id instead), so reading them would force a
-// decrypt of every row on every page load for nothing.
+// Paged table listing. Secrets are deliberately absent: the UI never renders them
+// here (the edit modal fetches /accounts/:id instead), so reading them would force
+// a decrypt of every row for nothing. Filtering and slicing both happen in SQL,
+// because the browser only ever holds one page.
 accounts.get('/', (c) => {
-  const rows = c.env.repo.accounts.listForTable({
-    groupId: c.req.query('group_id') ? Number(c.req.query('group_id')) : undefined,
-    keyword: c.req.query('keyword') || undefined,
-    tagId: c.req.query('tag_id') ? Number(c.req.query('tag_id')) : undefined,
-  });
-  const tags = c.env.repo.tags.forAccounts(rows.map((r) => r.id));
+  const page = intParam(c.req.query('page'), 1, 1, 1_000_000);
+  const pageSize = intParam(c.req.query('page_size'), 20, 1, 200);
+  const { items, total } = c.env.repo.accounts.listForTable(
+    {
+      groupId: c.req.query('group_id') ? Number(c.req.query('group_id')) : undefined,
+      keyword: c.req.query('keyword') || undefined,
+      tagId: c.req.query('tag_id') ? Number(c.req.query('tag_id')) : undefined,
+      status: c.req.query('status') || undefined,
+    },
+    { limit: pageSize, offset: (page - 1) * pageSize }
+  );
 
-  const data = rows.map((r) => ({
+  const tags = c.env.repo.tags.forAccounts(items.map((r) => r.id));
+  const data = items.map((r) => ({
     ...r,
     group_name: r.group_name ?? '默认分组',
     group_color: r.group_color ?? '#2563eb',
     tags: tags.get(r.id) ?? [],
   }));
-  return ok(data);
+  return ok({ items: data, total, page, page_size: pageSize });
 });
 
 // Dashboard aggregates. Declared before /:id so "stats" is not captured as an id.
 accounts.get('/stats', (c) => ok(c.env.repo.accounts.stats()));
+
+// Whole-set id/email/status list, for the mail page's account picker.
+accounts.get('/options', (c) => ok(c.env.repo.accounts.options()));
 
 accounts.post('/', async (c) => {
   const { repo } = c.env;
@@ -82,31 +91,42 @@ accounts.post('/', async (c) => {
   }
 });
 
-// Declared before /:id so "export" is not captured as an id.
+// Declared before /:id so "export" is not captured as an id. The file is streamed
+// instead of assembled into one JSON string: a full export decrypts thousands of
+// rows, and doing that in a single synchronous pass stalled every other request.
 accounts.get('/export', (c) => {
   const groupId = c.req.query('group_id') ? Number(c.req.query('group_id')) : undefined;
   const idsParam = c.req.query('ids');
+  const ids = idsParam
+    ? idsParam
+        .split(',')
+        .map((s) => Number.parseInt(s, 10))
+        .filter(Number.isInteger)
+    : undefined;
 
-  let rows: AccountRow[];
-  if (idsParam) {
-    const ids = idsParam
-      .split(',')
-      .map((s) => Number.parseInt(s, 10))
-      .filter(Number.isInteger);
-    rows = ids
-      .map((id) => c.env.repo.accounts.get(id))
-      .filter((a): a is AccountRow => a !== null)
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
-  } else {
-    rows = c.env.repo.accounts
-      .list({ groupId })
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
-  }
+  const { exportLines } = c.env.repo.accounts;
+  const encoder = new TextEncoder();
+  const filename = `accounts_${new Date().toISOString().slice(0, 10)}.txt`;
 
-  const content = rows
-    .map((r) => `${r.email}----${r.password || ''}----${r.client_id}----${r.refresh_token}`)
-    .join('\n');
-  return ok({ content, count: rows.length });
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const chunk of exportLines({ groupId, ids })) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${filename}"`,
+    },
+  });
 });
 
 accounts.post('/batch', async (c) => {

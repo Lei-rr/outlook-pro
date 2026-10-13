@@ -22,11 +22,6 @@ export interface AccountRow {
   updated_at: string;
 }
 
-export interface AccountWithGroup extends AccountRow {
-  group_name: string;
-  group_color: string;
-}
-
 export interface GroupRow {
   id: number;
   name: string;

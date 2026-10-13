@@ -1,6 +1,18 @@
-// Full schema in one place. Kept as a TS string (not a .sql file) so the build
-// step needs no asset copying and the Docker image stays single-layer simple.
-export const SCHEMA = `
+import type Database from 'better-sqlite3';
+
+export interface Migration {
+  version: number;
+  up: string;
+}
+
+// Ordered and append-only. Migration 1 is the original schema and stays
+// replayable, because a database created before this list existed reports
+// user_version 0 and therefore runs it once more — which is why every statement
+// in it is IF NOT EXISTS.
+export const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    up: `
 CREATE TABLE IF NOT EXISTS settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,
@@ -40,6 +52,9 @@ CREATE INDEX IF NOT EXISTS idx_accounts_refresh ON accounts(last_refreshed_at);
 -- The accounts table is always listed newest-first; without this the query falls
 -- back to "USE TEMP B-TREE FOR ORDER BY" on the whole table.
 CREATE INDEX IF NOT EXISTS idx_accounts_created ON accounts(created_at DESC);
+-- Status filtering moved server-side (the table is paginated), so the count and
+-- page queries both filter on it.
+CREATE INDEX IF NOT EXISTS idx_accounts_status  ON accounts(status);
 
 CREATE TABLE IF NOT EXISTS tags (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,4 +78,26 @@ CREATE TABLE IF NOT EXISTS push_state (
   updated_at     TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
-`;
+`,
+  },
+  {
+    version: 2,
+    up: `
+-- The GPTMail temp-mailbox feature is gone; its table only ever held scratch data.
+DROP TABLE IF EXISTS temp_emails;
+`,
+  },
+];
+
+// Applies every migration newer than PRAGMA user_version, each in its own
+// transaction so a failure leaves the database at the last good version.
+export function applyMigrations(db: Database.Database): void {
+  const current = db.pragma('user_version', { simple: true }) as number;
+  for (const m of MIGRATIONS) {
+    if (m.version <= current) continue;
+    db.transaction(() => {
+      db.exec(m.up);
+      db.pragma(`user_version = ${m.version}`);
+    })();
+  }
+}

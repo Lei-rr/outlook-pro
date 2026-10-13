@@ -47,9 +47,10 @@ describe('auth flow', () => {
     expect(cookie.startsWith('session=')).toBe(true);
     const res = await app.request('/api/accounts', { headers: { Cookie: cookie } }, env as never);
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { success: boolean; data: unknown[] };
+    const body = (await res.json()) as { success: boolean; data: { items: unknown[]; total: number } };
     expect(body.success).toBe(true);
-    expect(body.data).toEqual([]);
+    expect(body.data.items).toEqual([]);
+    expect(body.data.total).toBe(0);
   });
 
   it('throttles repeated failed logins from one IP', async () => {
@@ -119,12 +120,15 @@ describe('accounts api', () => {
     const accountId = ((await created.json()) as { data: { id: number } }).data.id;
 
     const list = await app.request('/api/accounts', { headers: auth }, env as never);
-    const listBody = (await list.json()) as { data: { email: string; refresh_token?: string }[] };
-    expect(listBody.data).toHaveLength(1);
-    expect(listBody.data[0]!.email).toBe('user@outlook.com');
+    const listBody = (await list.json()) as {
+      data: { items: { email: string; refresh_token?: string }[]; total: number };
+    };
+    expect(listBody.data.total).toBe(1);
+    expect(listBody.data.items).toHaveLength(1);
+    expect(listBody.data.items[0]!.email).toBe('user@outlook.com');
     // Secrets are omitted from the list (the edit modal reads /accounts/:id), so
     // the endpoint never has to decrypt every row.
-    expect(listBody.data[0]!.refresh_token).toBeUndefined();
+    expect(listBody.data.items[0]!.refresh_token).toBeUndefined();
 
     const stats = await app.request('/api/accounts/stats', { headers: auth }, env as never);
     const statsBody = (await stats.json()) as { data: { total: number; status: Record<string, number> } };
@@ -135,9 +139,9 @@ describe('accounts api', () => {
     env.repo.accounts.markError(accountId, 'token 已过期');
     const errList = (await (
       await app.request('/api/accounts', { headers: auth }, env as never)
-    ).json()) as { data: { status: string; last_refresh_error: string }[] };
-    expect(errList.data[0]!.status).toBe('error');
-    expect(errList.data[0]!.last_refresh_error).toBe('token 已过期');
+    ).json()) as { data: { items: { status: string; last_refresh_error: string }[] } };
+    expect(errList.data.items[0]!.status).toBe('error');
+    expect(errList.data.items[0]!.last_refresh_error).toBe('token 已过期');
 
     // Detail payload must not carry the plaintext password; the token stays masked.
     const detail = await app.request(`/api/accounts/${accountId}`, { headers: auth }, env as never);
@@ -157,10 +161,12 @@ describe('accounts api', () => {
     const publicNoStore = await app.request('/api/auth/me', {}, env as never);
     expect(publicNoStore.headers.get('cache-control')).toBe('no-store');
 
+    // The export streams plain text behind a download header instead of building
+    // one giant JSON string for thousands of accounts.
     const exported = await app.request('/api/accounts/export', { headers: auth }, env as never);
-    const exportBody = (await exported.json()) as { data: { content: string; count: number } };
-    expect(exportBody.data.count).toBe(1);
-    expect(exportBody.data.content).toBe('user@outlook.com----pw----cid----rt');
+    expect(exported.headers.get('content-type')).toContain('text/plain');
+    expect(exported.headers.get('content-disposition')).toContain('attachment');
+    expect(await exported.text()).toBe('user@outlook.com----pw----cid----rt\n');
   });
 
   it('batch import parses multiple lines', async () => {
@@ -174,6 +180,61 @@ describe('accounts api', () => {
     );
     const body = (await res.json()) as { data: { added: number } };
     expect(body.data.added).toBe(2);
+  });
+
+  it('paginates and filters the account list', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    const auth = { 'Content-Type': 'application/json', Cookie: cookie };
+
+    for (let i = 0; i < 5; i++) {
+      await app.request(
+        '/api/accounts',
+        { ...json({ email: `p${i}@x.com`, client_id: 'c', refresh_token: 'r' }), headers: auth },
+        env as never
+      );
+    }
+    env.repo.accounts.update(1, { status: 'disabled' });
+
+    const page1 = (await (
+      await app.request('/api/accounts?page=1&page_size=2', { headers: { Cookie: cookie } }, env as never)
+    ).json()) as { data: { items: { email: string }[]; total: number; page: number; page_size: number } };
+    expect(page1.data.total).toBe(5);
+    expect(page1.data.page).toBe(1);
+    expect(page1.data.page_size).toBe(2);
+    expect(page1.data.items).toHaveLength(2);
+
+    const page3 = (await (
+      await app.request('/api/accounts?page=3&page_size=2', { headers: { Cookie: cookie } }, env as never)
+    ).json()) as { data: { items: unknown[] } };
+    expect(page3.data.items).toHaveLength(1);
+
+    const filtered = (await (
+      await app.request('/api/accounts?status=disabled', { headers: { Cookie: cookie } }, env as never)
+    ).json()) as { data: { items: { id: number }[]; total: number } };
+    expect(filtered.data.total).toBe(1);
+    expect(filtered.data.items[0]!.id).toBe(1);
+  });
+
+  it('serves a lightweight option list for pickers', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    await app.request(
+      '/api/accounts',
+      {
+        ...json({ email: 'pick@x.com', client_id: 'c', refresh_token: 'r' }),
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      },
+      env as never
+    );
+
+    const res = await app.request('/api/accounts/options', { headers: { Cookie: cookie } }, env as never);
+    const body = (await res.json()) as { data: Record<string, unknown>[] };
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]!.email).toBe('pick@x.com');
+    // The picker never needs the heavy columns.
+    expect(body.data[0]!.remark).toBeUndefined();
+    expect(body.data[0]!.created_at).toBeUndefined();
   });
 });
 

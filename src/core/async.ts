@@ -45,3 +45,7 @@ export class RateLimiter {
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Hand the event loop back between chunks of a long synchronous job, so queued
+// requests get served instead of waiting for the whole job to finish.
+export const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));

@@ -1,5 +1,6 @@
+import { yieldToLoop } from '../../core/async.js';
 import { decryptField, encryptField } from '../../core/crypto.js';
-import type { AccountRow, AccountWithGroup, Ctx } from './types.js';
+import type { AccountRow, Ctx } from './types.js';
 
 export interface AccountInput {
   email: string;
@@ -51,8 +52,27 @@ export interface AccountStats {
   errors: { id: number; email: string }[];
 }
 
+export interface AccountFilter {
+  groupId?: number;
+  keyword?: string;
+  tagId?: number;
+  status?: string;
+}
+
+export interface AccountPage {
+  items: AccountListRow[];
+  total: number;
+}
+
+// id/email/status only, for pickers that need every account but no row detail.
+export interface AccountOption {
+  id: number;
+  email: string;
+  status: string;
+}
+
 // Shared WHERE/JOIN builder for the account list queries.
-function buildFilter(filter: { groupId?: number; keyword?: string; tagId?: number }) {
+function buildFilter(filter: AccountFilter) {
   const conditions: string[] = [];
   const params: unknown[] = [];
   let join = '';
@@ -66,6 +86,10 @@ function buildFilter(filter: { groupId?: number; keyword?: string; tagId?: numbe
     conditions.push('a.group_id = ?');
     params.push(filter.groupId);
   }
+  if (filter.status) {
+    conditions.push('a.status = ?');
+    params.push(filter.status);
+  }
   if (filter.keyword) {
     conditions.push('(a.email LIKE ? OR a.remark LIKE ?)');
     params.push(`%${filter.keyword}%`, `%${filter.keyword}%`);
@@ -77,34 +101,84 @@ function buildFilter(filter: { groupId?: number; keyword?: string; tagId?: numbe
 export function accountsRepo({ db, key }: Ctx) {
   const enc = (v: string) => encryptField(v, key);
 
-  return {
-    list(filter: { groupId?: number; keyword?: string; tagId?: number } = {}): AccountWithGroup[] {
-      const { join, where, params } = buildFilter(filter);
-      const rows = db
-        .prepare(
-          `SELECT a.*, g.name AS group_name, g.color AS group_color
-           FROM accounts a LEFT JOIN groups g ON a.group_id = g.id${join}${where}
-           ORDER BY a.created_at DESC`
-        )
-        .all(...params) as AccountWithGroup[];
-      return rows.map((r) => ({ ...decrypt(r, key), group_name: r.group_name, group_color: r.group_color }));
-    },
+  interface ExportRow {
+    id: number;
+    email: string;
+    password: string;
+    client_id: string;
+    refresh_token: string;
+  }
 
-    // Table listing for the accounts page. The secret columns are deliberately
-    // not read: the UI only ever shows them masked, so decrypting ~24k AES fields
-    // per request (the single biggest cost in this endpoint) would be pure waste.
-    listForTable(filter: { groupId?: number; keyword?: string; tagId?: number } = {}): AccountListRow[] {
+  const exportLine = (r: ExportRow): string =>
+    `${r.email}----${decryptField(r.password, key)}----${decryptField(r.client_id, key)}----${decryptField(r.refresh_token, key)}`;
+
+  const EXPORT_CHUNK = 500;
+
+  // Walks the table by id and yields the export in chunks. Building the whole file
+  // in one string blocked the event loop for the entire request; this keeps memory
+  // flat and lets queued requests run between chunks.
+  async function* exportLines(opts: { groupId?: number; ids?: number[] }): AsyncGenerator<string> {
+    if (opts.ids?.length) {
+      const stmt = db.prepare('SELECT id, email, password, client_id, refresh_token FROM accounts WHERE id = ?');
+      for (let i = 0; i < opts.ids.length; i += EXPORT_CHUNK) {
+        const lines = opts.ids
+          .slice(i, i + EXPORT_CHUNK)
+          .map((id) => stmt.get(id) as ExportRow | undefined)
+          .filter((r): r is ExportRow => r !== undefined)
+          .map(exportLine);
+        if (lines.length) yield lines.join('\n') + '\n';
+        await yieldToLoop();
+      }
+      return;
+    }
+
+    const stmt = db.prepare(
+      opts.groupId
+        ? 'SELECT id, email, password, client_id, refresh_token FROM accounts WHERE id > ? AND group_id = ? ORDER BY id LIMIT ?'
+        : 'SELECT id, email, password, client_id, refresh_token FROM accounts WHERE id > ? ORDER BY id LIMIT ?'
+    );
+    let cursor = 0;
+    for (;;) {
+      const rows = (
+        opts.groupId ? stmt.all(cursor, opts.groupId, EXPORT_CHUNK) : stmt.all(cursor, EXPORT_CHUNK)
+      ) as ExportRow[];
+      if (!rows.length) return;
+      cursor = rows[rows.length - 1]!.id;
+      yield rows.map(exportLine).join('\n') + '\n';
+      await yieldToLoop();
+    }
+  }
+
+  return {
+    // One page of the table listing. Secret columns are deliberately not read:
+    // the UI only ever shows them masked, so decrypting ~24k AES fields per
+    // request would be pure waste.
+    listForTable(filter: AccountFilter = {}, page: { limit: number; offset: number }): AccountPage {
       const { join, where, params } = buildFilter(filter);
-      return db
+      const total = (
+        db.prepare(`SELECT COUNT(*) AS c FROM accounts a${join}${where}`).get(...params) as { c: number }
+      ).c;
+      const items = db
         .prepare(
           `SELECT a.id, a.email, a.group_id, a.remark, a.status, a.last_refreshed_at,
                   a.last_refresh_error, a.refresh_fail_count, a.created_at, a.updated_at,
                   g.name AS group_name, g.color AS group_color
            FROM accounts a LEFT JOIN groups g ON a.group_id = g.id${join}${where}
-           ORDER BY a.created_at DESC`
+           ORDER BY a.created_at DESC LIMIT ? OFFSET ?`
         )
-        .all(...params) as AccountListRow[];
+        .all(...params, page.limit, page.offset) as AccountListRow[];
+      return { items, total };
     },
+
+    // Whole-set id/email/status list for the mail page's account picker, which
+    // needs every account but none of the per-row detail.
+    options(): AccountOption[] {
+      return db
+        .prepare('SELECT id, email, status FROM accounts ORDER BY created_at DESC')
+        .all() as AccountOption[];
+    },
+
+    exportLines,
 
     // Aggregates for the dashboard: a few hundred bytes instead of shipping every
     // account row (and decrypting it) just to count statuses on the client.

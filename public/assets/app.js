@@ -71,13 +71,16 @@ let currentPage = 'accounts';
 let state = {
   groups: [],
   tags: [],
-  accounts: [],
+  // The accounts table is paginated server-side, so the browser only holds the
+  // current page plus a lightweight id/email/status list for the pickers.
+  accountPage: { items: [], total: 0, page: 1, page_size: 20 },
+  accountFilter: { group_id: '', tag_id: '', keyword: '', status: '' },
+  accountOptions: [],
   selectedAccount: null,
   emailList: [],
   selectedEmail: null,
   selectedEmailIds: new Set(),
   pendingEmailAccount: null,
-  pendingAccountStatus: null,
 };
 
 // ========== API Helpers ==========
@@ -131,13 +134,71 @@ async function logout() {
 }
 
 // ========== Navigation ==========
-function navigate(page) {
-  currentPage = page;
+const PAGES = ['dashboard', 'accounts', 'groups', 'tags', 'emails', 'settings'];
+
+// The visible page lives in the URL hash, so refresh, back/forward and a shared
+// link all land on the same view. Filters on the accounts page ride along as
+// query params.
+function readHash() {
+  const raw = location.hash.replace(/^#\/?/, '');
+  const [name, query] = raw.split('?');
+  return {
+    page: PAGES.includes(name) ? name : 'dashboard',
+    params: new URLSearchParams(query || ''),
+  };
+}
+
+function applyNavActive(page) {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.page === page);
   });
+}
+
+function syncHash(replace) {
+  const params = new URLSearchParams();
+  if (currentPage === 'accounts') {
+    const f = state.accountFilter;
+    if (f.group_id) params.set('group', f.group_id);
+    if (f.tag_id) params.set('tag', f.tag_id);
+    if (f.status) params.set('status', f.status);
+    if (f.keyword) params.set('q', f.keyword);
+    if (state.accountPage.page > 1) params.set('p', String(state.accountPage.page));
+  }
+  const qs = params.toString();
+  const next = '#/' + currentPage + (qs ? '?' + qs : '');
+  if (location.hash === next) return;
+  if (replace) history.replaceState(null, '', next);
+  else location.hash = next;
+}
+
+function applyFilterParams(params) {
+  state.accountFilter = {
+    group_id: params.get('group') || '',
+    tag_id: params.get('tag') || '',
+    keyword: params.get('q') || '',
+    status: params.get('status') || '',
+  };
+  const p = Number.parseInt(params.get('p') || '1', 10);
+  state.accountPage.page = Number.isFinite(p) && p > 0 ? p : 1;
+}
+
+function navigate(page, replace) {
+  currentPage = page;
+  applyNavActive(page);
+  syncHash(replace);
   renderPage();
 }
+
+// Back/forward. navigate() has already set currentPage by the time its own hash
+// write fires this event, so a same-page event is a no-op.
+window.addEventListener('hashchange', () => {
+  const { page, params } = readHash();
+  if (page === currentPage) return;
+  if (page === 'accounts') applyFilterParams(params);
+  currentPage = page;
+  applyNavActive(page);
+  renderPage();
+});
 
 function renderPage() {
   const content = document.getElementById('pageContent');
@@ -279,7 +340,7 @@ function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount)
 
 // Jump to accounts page, optionally pre-filtering by status (from dashboard cards)
 function goToAccounts(status) {
-  state.pendingAccountStatus = status || '';
+  state.accountFilter = { group_id: '', tag_id: '', keyword: '', status: status || '' };
   navigate('accounts');
 }
 
@@ -413,15 +474,9 @@ async function loadAccountStats() {
   return res?.success ? res.data : { total: 0, status: {}, groups: [], errors: [] };
 }
 
-async function loadAccounts(groupId) {
-  const url = groupId ? `/accounts?group_id=${groupId}` : '/accounts';
-  const res = await api(url);
-  if (res?.success) state.accounts = res.data || [];
-}
-
 async function renderAccounts(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
-  await Promise.all([loadGroups(), loadTags(), loadAccounts()]);
+  await Promise.all([loadGroups(), loadTags(), loadAccountPage(false)]);
 
   // Single sticky row: filters + search + count on the left, page actions on the
   // right; the batch bar joins it so selection actions stay visible while the
@@ -430,20 +485,20 @@ async function renderAccounts(el) {
   <div class="toolbar" style="margin-bottom:0">
     <select class="form-select" style="width:auto;min-width:140px" id="accountGroupFilter" onchange="filterAccountsByGroup(this.value)">
       <option value="">${t('全部分组')}</option>
-      ${state.groups.map(g => `<option value="${g.id}">${esc(g.name)} (${g.account_count ?? 0})</option>`).join('')}
+      ${state.groups.map(g => `<option value="${g.id}"${String(state.accountFilter.group_id) === String(g.id) ? ' selected' : ''}>${esc(g.name)} (${g.account_count ?? 0})</option>`).join('')}
     </select>
     <select class="form-select" style="width:auto;min-width:110px" id="accountStatusFilter" onchange="filterAccountsByStatus(this.value)">
       <option value="">${t('全部状态')}</option>
-      <option value="active">${t('活跃')}</option>
-      <option value="disabled">${t('停用')}</option>
-      <option value="error">${t('异常')}</option>
+      <option value="active"${state.accountFilter.status === 'active' ? ' selected' : ''}>${t('活跃')}</option>
+      <option value="disabled"${state.accountFilter.status === 'disabled' ? ' selected' : ''}>${t('停用')}</option>
+      <option value="error"${state.accountFilter.status === 'error' ? ' selected' : ''}>${t('异常')}</option>
     </select>
     <select class="form-select" style="width:auto;min-width:110px" id="accountTagFilter" onchange="filterAccountsByTag(this.value)">
       <option value="">${t('全部标签')}</option>
-      ${state.tags.map(tg => `<option value="${tg.id}">${esc(tg.name)} (${tg.account_count ?? 0})</option>`).join('')}
+      ${state.tags.map(tg => `<option value="${tg.id}"${String(state.accountFilter.tag_id) === String(tg.id) ? ' selected' : ''}>${esc(tg.name)} (${tg.account_count ?? 0})</option>`).join('')}
     </select>
-    <input class="search-input" placeholder="${t('搜索邮箱或备注...')}" oninput="searchAccounts(this.value)">
-    <span style="font-size:12px;color:var(--text-dim);white-space:nowrap" id="accountCount">${t('{n} 个账号', { n: state.accounts.length })}</span>
+    <input class="search-input" value="${esc(state.accountFilter.keyword)}" placeholder="${t('搜索邮箱或备注...')}" oninput="searchAccounts(this.value)">
+    <span style="font-size:12px;color:var(--text-dim);white-space:nowrap" id="accountCount">${t('{n} 个账号', { n: state.accountPage.total })}</span>
     <span style="flex:1"></span>
     <button class="btn btn-primary btn-sm" onclick="showAddAccountModal()">${t('+ 添加账号')}</button>
     <button class="btn btn-sm" onclick="showImportModal()">${t('批量导入')}</button>
@@ -461,8 +516,11 @@ async function renderAccounts(el) {
   </div>
   </div>`;
 
-  if (state.accounts.length === 0) {
-    el.innerHTML = `<div class="accounts-layout">${toolbar}<div class="empty-state">${t('暂无账号，点击"添加账号"开始')}</div></div>`;
+  if (state.accountPage.total === 0) {
+    const f = state.accountFilter;
+    const filtered = f.group_id || f.tag_id || f.keyword || f.status;
+    const msg = filtered ? t('没有符合条件的账号') : t('暂无账号，点击"添加账号"开始');
+    el.innerHTML = `<div class="accounts-layout">${toolbar}<div class="empty-state">${msg}</div></div>`;
     return;
   }
 
@@ -478,7 +536,7 @@ async function renderAccounts(el) {
   <div class="page-footer">
     <span style="font-size:12px;color:var(--text-dim)">${t('每页')}</span>
     <select class="form-select" style="width:auto" onchange="accSetPageSize(this.value)">
-      ${[20, 50, 100].map(n => `<option value="${n}" ${n === accPageSize ? 'selected' : ''}>${n}</option>`).join('')}
+      ${[20, 50, 100].map(n => `<option value="${n}" ${n === state.accountPage.page_size ? 'selected' : ''}>${n}</option>`).join('')}
     </select>
     <span style="font-size:12px;color:var(--text-dim)">${t('条')}</span>
     <span style="flex:1"></span>
@@ -488,47 +546,29 @@ async function renderAccounts(el) {
   </div>
   </div>`;
 
-  setAccountsView(state.accounts);
-
-  // Apply a status filter requested from the dashboard cards (活跃 / 异常)
-  if (state.pendingAccountStatus) {
-    const sel = document.getElementById('accountStatusFilter');
-    if (sel) { sel.value = state.pendingAccountStatus; filterAccountsByStatus(state.pendingAccountStatus); }
-    state.pendingAccountStatus = null;
-  }
+  renderAccountsTable();
 }
 
 var selectedAccountIds = new Set();
 
-// ---- Client-side pagination over the (filtered) account list ----
-var accountsView = [];
-var accPage = 1;
-var accPageSize = parseInt(localStorage.getItem('accPageSize')) || 20;
-
-// Every filter path funnels through here: swap the visible list, reset to page 1
-function setAccountsView(list) {
-  accountsView = list || [];
-  accPage = 1;
-  renderAccountsTable();
-}
+// ---- Server-side pagination: the browser only ever holds the current page ----
+state.accountPage.page_size = parseInt(localStorage.getItem('accPageSize')) || 20;
 
 function renderAccountsTable() {
   const tbody = document.getElementById('accountsBody');
   if (!tbody) return;
-  const totalPages = Math.max(1, Math.ceil(accountsView.length / accPageSize));
-  if (accPage > totalPages) accPage = totalPages;
-  if (accPage < 1) accPage = 1;
-  const start = (accPage - 1) * accPageSize;
-  tbody.innerHTML = renderAccountRows(accountsView.slice(start, start + accPageSize));
+  const { items, total, page, page_size } = state.accountPage;
+  const totalPages = Math.max(1, Math.ceil(total / page_size));
+  tbody.innerHTML = renderAccountRows(items);
 
   const cnt = document.getElementById('accountCount');
-  if (cnt) cnt.textContent = t('{n} 个账号', { n: accountsView.length });
+  if (cnt) cnt.textContent = t('{n} 个账号', { n: total });
   const info = document.getElementById('accPageInfo');
-  if (info) info.textContent = accPage + ' / ' + totalPages;
+  if (info) info.textContent = page + ' / ' + totalPages;
   const prev = document.getElementById('accPrevBtn');
-  if (prev) prev.disabled = accPage <= 1;
+  if (prev) prev.disabled = page <= 1;
   const next = document.getElementById('accNextBtn');
-  if (next) next.disabled = accPage >= totalPages;
+  if (next) next.disabled = page >= totalPages;
   // Header checkbox only ever refers to the rows on the current page
   const all = document.getElementById('selectAll');
   if (all) all.checked = false;
@@ -536,16 +576,62 @@ function renderAccountsTable() {
   if (wrap) wrap.scrollTop = 0;
 }
 
-function accSetPageSize(v) {
-  accPageSize = parseInt(v) || 20;
-  localStorage.setItem('accPageSize', String(accPageSize));
-  accPage = 1;
+// Fetch one page with the current filter. Returns null when the request failed.
+async function fetchAccountPage(page) {
+  const f = state.accountFilter;
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(state.accountPage.page_size),
+  });
+  if (f.group_id) params.set('group_id', f.group_id);
+  if (f.tag_id) params.set('tag_id', f.tag_id);
+  if (f.status) params.set('status', f.status);
+  if (f.keyword) params.set('keyword', f.keyword);
+
+  const res = await api('/accounts?' + params.toString());
+  if (!res?.success) return null;
+  return {
+    items: res.data.items || [],
+    total: res.data.total || 0,
+    page: res.data.page || 1,
+    page_size: res.data.page_size || state.accountPage.page_size,
+  };
+}
+
+// `reset` jumps back to page 1, which is what every filter change wants; paging
+// keeps the current index.
+async function loadAccountPage(reset) {
+  if (reset) state.accountPage.page = 1;
+  const data = await fetchAccountPage(state.accountPage.page);
+  if (!data) return;
+
+  // A narrowing filter can leave the index past the end; step back to the last
+  // page that still has rows instead of showing an empty table.
+  const lastPage = Math.max(1, Math.ceil(data.total / data.page_size));
+  const pastEnd = !data.items.length && data.page > lastPage;
+  state.accountPage = pastEnd ? (await fetchAccountPage(lastPage)) || data : data;
+
   renderAccountsTable();
+  // Filters and the page index are replace-only: they must not pile up history
+  // entries for the back button to chew through.
+  syncHash(true);
+}
+
+// id/email/status for the whole set, used by the mail page's account picker.
+async function loadAccountOptions() {
+  const res = await api('/accounts/options');
+  if (res?.success) state.accountOptions = res.data || [];
+}
+
+function accSetPageSize(v) {
+  state.accountPage.page_size = parseInt(v) || 20;
+  localStorage.setItem('accPageSize', String(state.accountPage.page_size));
+  loadAccountPage(true);
 }
 
 function accTurnPage(delta) {
-  accPage += delta;
-  renderAccountsTable();
+  state.accountPage.page += delta;
+  loadAccountPage(false);
 }
 
 // Status badge plus, when a refresh failed, the reason the backend recorded.
@@ -598,29 +684,15 @@ function goToEmail(accountId) {
   navigate('emails');
 }
 
-// Export accounts. Pass an array of ids to export specific rows (single or selected);
-// omit to export all (respecting the current group filter).
-async function exportAccounts(ids) {
+// Export accounts. Pass an array of ids to export specific rows (single or
+// selected); omit to export all (respecting the current filters). The server
+// streams the file behind a Content-Disposition header, so this is a plain
+// navigation rather than a fetch that would hold the whole export in memory.
+function exportAccounts(ids) {
   let url = '/accounts/export';
-  if (Array.isArray(ids) && ids.length) {
-    url += '?ids=' + ids.join(',');
-  } else {
-    const groupFilter = document.getElementById('accountGroupFilter')?.value;
-    if (groupFilter) url += '?group_id=' + groupFilter;
-  }
-  const res = await api(url);
-  if (!res?.success || !res.data?.content) { toast(t('没有可导出的账号'), 'error'); return; }
-
-  showModal(t('导出账号 ({n} 个)', { n: res.data.count }), `
-    <div class="form-group">
-      <label class="form-label">${t('导出内容（格式：邮箱----密码----client_id----refresh_token）')}</label>
-      <textarea class="form-textarea" id="exportData" rows="10" readonly style="font-size:12px">${esc(res.data.content)}</textarea>
-    </div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-primary btn-sm" type="button" onclick="copyText(document.getElementById('exportData').value,this)">${t('复制全部')}</button>
-      <button class="btn btn-sm" type="button" onclick="downloadExport()">${t('下载 TXT')}</button>
-    </div>
-  `, () => true);
+  if (Array.isArray(ids) && ids.length) url += '?ids=' + ids.join(',');
+  else if (state.accountFilter.group_id) url += '?group_id=' + state.accountFilter.group_id;
+  window.location.href = API + url;
 }
 
 // Export currently selected accounts (from the batch bar)
@@ -628,17 +700,6 @@ function exportSelected() {
   const ids = [...selectedAccountIds];
   if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
   exportAccounts(ids);
-}
-
-function downloadExport() {
-  const text = document.getElementById('exportData')?.value;
-  if (!text) return;
-  const blob = new Blob([text], { type: 'text/plain' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'accounts_' + new Date().toISOString().slice(0,10) + '.txt';
-  a.click();
-  URL.revokeObjectURL(a.href);
 }
 
 // Batch selection. Delta-based (not rebuilt from the DOM) so selections
@@ -718,33 +779,28 @@ async function batchAction(action) {
   else toast(res?.error?.message || t('操作失败'), 'error');
 }
 
-// Filter by status
+// Every filter writes state.accountFilter and reloads page 1 from the server.
 function filterAccountsByStatus(status) {
-  setAccountsView(status ? state.accounts.filter(a => a.status === status) : state.accounts);
+  state.accountFilter.status = status;
+  loadAccountPage(true);
 }
 
-async function filterAccountsByGroup(gid) {
-  await loadAccounts(gid || undefined);
-  setAccountsView(state.accounts);
+function filterAccountsByGroup(gid) {
+  state.accountFilter.group_id = gid;
+  loadAccountPage(true);
 }
 
-async function filterAccountsByTag(tagId) {
-  const res = await api(`/accounts${tagId ? '?tag_id=' + tagId : ''}`);
-  if (res?.success) {
-    state.accounts = res.data || [];
-    setAccountsView(state.accounts);
-  }
+function filterAccountsByTag(tagId) {
+  state.accountFilter.tag_id = tagId;
+  loadAccountPage(true);
 }
 
 let searchTimer;
 function searchAccounts(keyword) {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(async () => {
-    const res = await api(`/accounts${keyword ? '?keyword=' + encodeURIComponent(keyword) : ''}`);
-    if (res?.success) {
-      state.accounts = res.data || [];
-      setAccountsView(state.accounts);
-    }
+  searchTimer = setTimeout(() => {
+    state.accountFilter.keyword = keyword;
+    loadAccountPage(true);
   }, 300);
 }
 
@@ -1011,10 +1067,10 @@ async function testAccount(id, btn) {
 // scroll position and selection instead of being re-rendered from scratch.
 function applyTestStatus(ids, results) {
   const statusOf = new Map(ids.map((id, i) => [id, results[i]?.success && results[i].data?.connected ? 'active' : 'error']));
-  for (const acc of state.accounts) if (statusOf.has(acc.id)) acc.status = statusOf.get(acc.id);
-  for (const acc of accountsView) if (statusOf.has(acc.id)) acc.status = statusOf.get(acc.id);
+  for (const acc of state.accountPage.items) if (statusOf.has(acc.id)) acc.status = statusOf.get(acc.id);
+  for (const acc of state.accountOptions) if (statusOf.has(acc.id)) acc.status = statusOf.get(acc.id);
 
-  const rows = new Map(accountsView.map(a => [a.id, a]));
+  const rows = new Map(state.accountPage.items.map(a => [a.id, a]));
   document.getElementById('accountsBody')?.querySelectorAll('tr').forEach(tr => {
     const acc = rows.get(Number(tr.querySelector('.acc-check')?.value));
     if (acc && statusOf.has(acc.id)) tr.outerHTML = renderAccountRows([acc]);
@@ -1056,7 +1112,7 @@ async function batchTestAccounts() {
 
 // Copy API command for a single account (curl example with email pre-filled)
 async function copyApiCommand(accountId, btn) {
-  const acc = state.accounts.find(a => a.id === accountId);
+  const acc = state.accountOptions.find(a => a.id === accountId);
   if (!acc) return;
 
   // Fetch the external API key from settings
@@ -1095,9 +1151,9 @@ async function deleteAccount(id) {
 // ========== Emails ==========
 async function renderEmails(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
-  await loadAccounts();
+  await loadAccountOptions();
 
-  if (state.accounts.length === 0) {
+  if (state.accountOptions.length === 0) {
     el.innerHTML = `<div class="empty-state">${t('暂无邮箱账号，请先添加账号')}</div>`;
     return;
   }
@@ -1141,7 +1197,7 @@ async function renderEmails(el) {
     </div>
   `;
   if (state.pendingEmailAccount) {
-    const acc = state.accounts.find(a => String(a.id) === String(state.pendingEmailAccount));
+    const acc = state.accountOptions.find(a => String(a.id) === String(state.pendingEmailAccount));
     const input = document.getElementById('emailAccountInput');
     if (acc && input) {
       input.value = acc.email;
@@ -1185,7 +1241,7 @@ function renderAccountComboItems(keyword) {
   const list = document.getElementById('accountComboList');
   if (!list) return;
   const kw = (keyword || '').trim().toLowerCase();
-  const matches = state.accounts.filter(
+  const matches = state.accountOptions.filter(
     (a) => a.status !== 'disabled' && (!kw || String(a.email).toLowerCase().includes(kw))
   );
   const shown = matches.slice(0, MAX_COMBO_ITEMS);
@@ -1288,7 +1344,7 @@ function loadMoreFooterHtml() {
 
 // Copy the currently selected account's email address
 function copySelectedEmail(btn) {
-  const acc = state.accounts.find(a => String(a.id) === String(state.selectedAccount));
+  const acc = state.accountOptions.find(a => String(a.id) === String(state.selectedAccount));
   if (!acc) { toast(t('请先选择邮箱账号'), 'error'); return; }
   copyText(acc.email, btn);
 }
@@ -1306,10 +1362,12 @@ async function loadEmailList(accountId) {
   state.selectedEmailIds.clear();
   updateEmailBatchActions();
   // Show the selected account's tags under the toolbar
+  // Tags come from the account detail endpoint: the picker list only carries
+  // id/email/status so it can stay cheap for thousands of accounts.
   const tagBox = document.getElementById('emailAccountTags');
   if (tagBox) {
-    const acc = state.accounts.find(a => String(a.id) === String(accountId));
-    tagBox.innerHTML = acc ? tagBadgesHtml(acc.tags) : '';
+    const detail = await api(`/accounts/${accountId}`);
+    tagBox.innerHTML = detail?.success ? tagBadgesHtml(detail.data.tags) : '';
   }
   const pane = document.getElementById('emailListPane');
   pane.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载邮件...') + '</div>';
@@ -1838,5 +1896,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   restoreSidebar();
   document.title = t('Outlook Pro');
   const authed = await checkAuth();
-  if (authed) navigate('dashboard');
+  if (!authed) return;
+  // Restore the view (and any account filters) that the URL points at.
+  const { page, params } = readHash();
+  applyFilterParams(params);
+  navigate(page, true);
 });

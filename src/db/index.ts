@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { SCHEMA } from './schema.js';
+import { applyMigrations } from './schema.js';
 
 export function openDb(dataDir: string): Database.Database {
   mkdirSync(dataDir, { recursive: true });
@@ -11,6 +11,6 @@ export function openDb(dataDir: string): Database.Database {
   // WAL + NORMAL is the recommended pairing: still crash-safe, but commits skip
   // the per-transaction fsync.
   db.pragma('synchronous = NORMAL');
-  db.exec(SCHEMA);
+  applyMigrations(db);
   return db;
 }
