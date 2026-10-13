@@ -35,7 +35,7 @@ services:
     container_name: outlook-pro
     restart: unless-stopped
     ports:
-      - "3020:3000"
+      - "3020:3020"
     volumes:
       - ./data:/data
 ```
@@ -50,7 +50,7 @@ docker compose up -d
 docker run -d \
   --name outlook-pro \
   --restart unless-stopped \
-  -p 3020:3000 \
+  -p 3020:3020 \
   -v "$(pwd)/data:/data" \
   ghcr.io/lei-rr/outlook-pro:latest
 ```
@@ -131,8 +131,10 @@ node dist/server.js
 
 ```bash
 curl -H "X-API-Key: <key>" \
-  "http://localhost:3000/api/external/emails?email=user@outlook.com&folder=all&top=10"
+  "http://localhost:3020/api/external/emails?email=user@outlook.com&folder=all&top=10"
 ```
+
+端口按实际部署调整：Docker 镜像内默认监听 `3020`，源码运行默认 `3000`。
 
 | 参数 | 说明 |
 |---|---|
