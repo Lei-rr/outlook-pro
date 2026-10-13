@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { accountsRepo } from './accounts.js';
 import { groupsRepo } from './groups.js';
 import { pushStateRepo } from './pushState.js';
+import { refreshLogRepo } from './refreshLog.js';
 import { settingsRepo } from './settings.js';
 import { tagsRepo } from './tags.js';
 
@@ -14,6 +15,7 @@ export function createRepo(db: Database.Database, key: Buffer) {
     groups: groupsRepo(ctx),
     tags: tagsRepo(ctx),
     pushState: pushStateRepo(ctx),
+    refreshLog: refreshLogRepo(ctx),
   };
 }
 

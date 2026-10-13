@@ -1,6 +1,7 @@
 import { MAX_REFRESH_WINDOW_DAYS, type Config } from '../config.js';
 import { mapLimit, RateLimiter, sleep } from '../core/async.js';
 import type { Repo } from '../db/repo/index.js';
+import type { RefreshEntry } from '../db/repo/refreshLog.js';
 import { refreshAccessToken } from '../services/graph.js';
 
 export interface RefreshSummary {
@@ -61,6 +62,7 @@ export async function runTokenRefresh(
   let failed = 0;
   let rotated = 0;
   const limiter = new RateLimiter(rate);
+  const attempts: RefreshEntry[] = [];
 
   await mapLimit(due, concurrency, async (acc) => {
     const res = await refreshOne(acc.client_id, acc.refresh_token, limiter);
@@ -69,11 +71,19 @@ export async function runTokenRefresh(
       const isRotated = Boolean(res.newRefreshToken && res.newRefreshToken !== acc.refresh_token);
       if (isRotated) rotated++;
       accounts.markRefreshed(acc.id, isRotated ? res.newRefreshToken : undefined);
+      attempts.push({ accountId: acc.id, ok: true });
     } else {
       failed++;
-      accounts.markError(acc.id, res.error?.message ?? 'Token 获取失败');
+      const message = res.error?.message ?? 'Token 获取失败';
+      accounts.markError(acc.id, message);
+      attempts.push({ accountId: acc.id, ok: false, message });
     }
   });
+
+  // Attempt history for diagnostics, batched into one transaction and bounded to
+  // a 30-day window so the table cannot grow without limit.
+  repo.refreshLog.addMany(attempts);
+  repo.refreshLog.prune(30);
 
   const summary: RefreshSummary = {
     ranAt: new Date().toISOString(),

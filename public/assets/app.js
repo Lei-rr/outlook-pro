@@ -75,6 +75,10 @@ let state = {
   // current page plus a lightweight id/email/status list for the pickers.
   accountPage: { items: [], total: 0, page: 1, page_size: 20 },
   accountFilter: { group_id: '', tag_id: '', keyword: '', status: '' },
+  accountSort: { sort: 'created', order: 'desc' },
+  // True when the batch bar means "every account matching the filter" instead of
+  // the explicitly ticked ids.
+  selectAllMatching: false,
   accountOptions: [],
   selectedAccount: null,
   emailList: [],
@@ -162,6 +166,8 @@ function syncHash(replace) {
     if (f.tag_id) params.set('tag', f.tag_id);
     if (f.status) params.set('status', f.status);
     if (f.keyword) params.set('q', f.keyword);
+    if (state.accountSort.sort !== 'created') params.set('sort', state.accountSort.sort);
+    if (state.accountSort.order !== 'desc') params.set('order', state.accountSort.order);
     if (state.accountPage.page > 1) params.set('p', String(state.accountPage.page));
   }
   const qs = params.toString();
@@ -180,6 +186,10 @@ function applyFilterParams(params) {
   };
   const p = Number.parseInt(params.get('p') || '1', 10);
   state.accountPage.page = Number.isFinite(p) && p > 0 ? p : 1;
+  const sort = params.get('sort');
+  if (sort) state.accountSort.sort = sort;
+  const order = params.get('order');
+  if (order === 'asc' || order === 'desc') state.accountSort.order = order;
 }
 
 function navigate(page, replace) {
@@ -243,7 +253,7 @@ function pageToolbarHtml(info, actionsHtml) {
 // ========== Dashboard ==========
 async function renderDashboard(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
-  const [, stats] = await Promise.all([loadGroups(), loadAccountStats()]);
+  const [, stats, status] = await Promise.all([loadGroups(), loadAccountStats(), loadStatus()]);
   const activeCount = stats.status.active || 0;
   const errorCount = stats.status.error || 0;
   const disabledCount = stats.status.disabled || 0;
@@ -260,7 +270,7 @@ async function renderDashboard(el) {
         <div><div style="font-size:28px;font-weight:700;color:${s.color};line-height:1.1">${s.value}</div><div style="color:var(--text-dim);font-size:12.5px;margin-top:2px">${s.label}</div></div>
       </div>`).join('')}
     </div>
-    ${stats.total > 0 ? dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount) : ''}
+    ${stats.total > 0 ? dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount, status) : ''}
     ${stats.total === 0 ? `<div class="card" style="text-align:center;padding:40px">
       <div style="font-size:14px;color:var(--text-muted);margin-bottom:12px">${t('还没有添加邮箱账号')}</div>
       <button class="btn btn-primary" onclick="navigate('accounts')">${t('前往添加')}</button>
@@ -271,7 +281,7 @@ async function renderDashboard(el) {
 // Two glass cards below the stat tiles: account health (status stacked bar +
 // shortcuts to broken accounts) and per-group distribution bars. Pure frontend
 // aggregation over already-loaded state — no extra API calls, free-tier safe.
-function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount) {
+function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount, status) {
   const total = stats.total;
   // Status palette (reserved, matches badges): shown with label + count, never color alone
   const statuses = [
@@ -322,6 +332,26 @@ function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount)
     </div>`;
   }).join('');
 
+  // Scheduler card: what ran, what runs next, how much is queued. Everything comes
+  // from /api/status instead of being inferred in the browser.
+  const r = status?.refresh;
+  const row = (label, value) =>
+    `<span style="color:var(--text-dim)">${label}</span><b style="color:var(--text);font-weight:600">${value}</b>`;
+  const refreshCard = r
+    ? `<div class="card">
+        <h3 style="font-size:14px;margin-bottom:14px">${t('定时刷新')}</h3>
+        ${r.enabled ? '' : `<div style="font-size:12.5px;color:var(--danger);margin-bottom:10px">${t('定时刷新已停用')}</div>`}
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:9px 14px;font-size:12.5px">
+          ${row(t('节奏'), `${t('{n} 小时', { n: r.intervalHours })} · ${t('每批 {n} 个', { n: r.batch })} · ${t('窗口 {n} 天', { n: r.windowDays })}`)}
+          ${row(t('上次运行'), r.lastRun ? formatShortTime(r.lastRun) : t('尚未运行'))}
+          ${row(t('下次运行'), r.nextRunAt ? formatShortTime(r.nextRunAt) : '—')}
+          ${row(t('待刷新'), t('{n} 个', { n: r.due ?? 0 }))}
+          ${row(t('近 30 天'), t('成功 {ok}，失败 {fail}', { ok: status.log?.ok ?? 0, fail: status.log?.failed ?? 0 }))}
+        </div>
+        ${r.lastResult ? `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);font-size:11.5px;color:var(--text-dim);word-break:break-all">${esc(r.lastResult)}</div>` : ''}
+      </div>`
+    : '';
+
   return `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px">
       <div class="card">
@@ -335,6 +365,7 @@ function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount)
         ${groupBars || `<div style="font-size:12.5px;color:var(--text-dim)">${t('暂无分组数据')}</div>`}
         ${restCount > 0 ? `<div style="font-size:11px;color:var(--text-dim)">${t('其余 {g} 个分组共 {n} 个账号', { g: groups.length - 6, n: restCount })}</div>` : ''}
       </div>
+      ${refreshCard}
     </div>`;
 }
 
@@ -474,6 +505,12 @@ async function loadAccountStats() {
   return res?.success ? res.data : { total: 0, status: {}, groups: [], errors: [] };
 }
 
+// Scheduler + queue state for the dashboard.
+async function loadStatus() {
+  const res = await api('/status');
+  return res?.success ? res.data : null;
+}
+
 async function renderAccounts(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>' + t('加载中...') + '</div>';
   await Promise.all([loadGroups(), loadTags(), loadAccountPage(false)]);
@@ -481,6 +518,9 @@ async function renderAccounts(el) {
   // Single sticky row: filters + search + count on the left, page actions on the
   // right; the batch bar joins it so selection actions stay visible while the
   // (potentially very long) table scrolls underneath.
+  // Sort select mirrors state.accountSort; values must exist in the backend whitelist.
+  const sortIs = (v) => state.accountSort.sort + ':' + state.accountSort.order === v;
+
   const toolbar = `<div class="page-sticky">
   <div class="toolbar" style="margin-bottom:0">
     <select class="form-select" style="width:auto;min-width:140px" id="accountGroupFilter" onchange="filterAccountsByGroup(this.value)">
@@ -498,6 +538,13 @@ async function renderAccounts(el) {
       ${state.tags.map(tg => `<option value="${tg.id}"${String(state.accountFilter.tag_id) === String(tg.id) ? ' selected' : ''}>${esc(tg.name)} (${tg.account_count ?? 0})</option>`).join('')}
     </select>
     <input class="search-input" value="${esc(state.accountFilter.keyword)}" placeholder="${t('搜索邮箱或备注...')}" oninput="searchAccounts(this.value)">
+    <select class="form-select" style="width:auto;min-width:130px" id="accountSortSelect" onchange="setAccountSort(this.value)">
+      <option value="created:desc"${sortIs('created:desc') ? ' selected' : ''}>${t('最近添加')}</option>
+      <option value="refreshed:asc"${sortIs('refreshed:asc') ? ' selected' : ''}>${t('最久未刷新')}</option>
+      <option value="fails:desc"${sortIs('fails:desc') ? ' selected' : ''}>${t('失败最多')}</option>
+      <option value="email:asc"${sortIs('email:asc') ? ' selected' : ''}>${t('邮箱 A-Z')}</option>
+      <option value="status:asc"${sortIs('status:asc') ? ' selected' : ''}>${t('状态')}</option>
+    </select>
     <span style="font-size:12px;color:var(--text-dim);white-space:nowrap" id="accountCount">${t('{n} 个账号', { n: state.accountPage.total })}</span>
     <span style="flex:1"></span>
     <button class="btn btn-primary btn-sm" onclick="showAddAccountModal()">${t('+ 添加账号')}</button>
@@ -506,6 +553,7 @@ async function renderAccounts(el) {
   </div>
   <div id="batchBar" style="display:flex;margin-top:10px;padding:10px 14px;background:var(--primary-bg);border:1px solid var(--border-focus);border-radius:8px;align-items:center;gap:8px;font-size:13px">
     <span id="batchCount" style="color:var(--primary)">${t('未选中')}</span>
+    <button class="btn btn-sm" id="btnSelectAllMatching" onclick="selectAllMatching()" style="display:none"></button>
     <button class="btn btn-sm" id="btnBatchTest" onclick="batchTestAccounts()" disabled>${t('批量测试')}</button>
     <button class="btn btn-sm" id="btnBatchMove" onclick="batchAction('move')" disabled>${t('移动分组')}</button>
     <button class="btn btn-sm" id="btnBatchEnable" onclick="batchAction('enable')" disabled>${t('批量启用')}</button>
@@ -587,6 +635,8 @@ async function fetchAccountPage(page) {
   if (f.tag_id) params.set('tag_id', f.tag_id);
   if (f.status) params.set('status', f.status);
   if (f.keyword) params.set('keyword', f.keyword);
+  params.set('sort', state.accountSort.sort);
+  params.set('order', state.accountSort.order);
 
   const res = await api('/accounts?' + params.toString());
   if (!res?.success) return null;
@@ -634,11 +684,49 @@ function accTurnPage(delta) {
   loadAccountPage(false);
 }
 
-// Status badge plus, when a refresh failed, the reason the backend recorded.
+// Sort key + direction from the toolbar select ("refreshed:asc"). Sorting happens
+// in SQL: the browser only holds one page, so it cannot reorder the whole set.
+function setAccountSort(value) {
+  const [sort, order] = String(value).split(':');
+  state.accountSort = { sort: sort || 'created', order: order === 'asc' ? 'asc' : 'desc' };
+  state.accountPage.page = 1;
+  loadAccountPage(false);
+}
+
+// Status badge, plus - for failed accounts - the reason, the backoff window they
+// are currently sitting in, and a link into their refresh history.
 function statusCellHtml(a) {
-  const err = a.status === 'error' ? a.last_refresh_error || '' : '';
-  if (!err) return `<span class="badge badge-${a.status}">${a.status}</span>`;
-  return `<span class="badge badge-${a.status}" title="${esc(err)}">${a.status}</span><div class="err-hint" title="${esc(err)}">${esc(err)}</div>`;
+  const parts = [
+    `<span class="badge badge-${a.status}"${a.last_refresh_error ? ` title="${esc(a.last_refresh_error)}"` : ''}>${a.status}</span>`,
+  ];
+  if (a.status === 'error' && a.last_refresh_error) {
+    parts.push(`<div class="err-hint" title="${esc(a.last_refresh_error)}">${esc(a.last_refresh_error)}</div>`);
+  }
+  if (a.next_refresh_at && a.next_refresh_at > utcNowStr()) {
+    parts.push(`<div class="err-hint">${t('退避至 {time}', { time: formatShortTime(a.next_refresh_at) })}</div>`);
+  }
+  if (a.refresh_fail_count > 0) {
+    parts.push(
+      `<button class="link-btn" onclick="showRefreshLog(${a.id})">${t('{n} 次失败记录', { n: a.refresh_fail_count })}</button>`
+    );
+  }
+  return parts.join('');
+}
+
+// Refresh history for one account - the last 20 attempts recorded by the job.
+async function showRefreshLog(accountId) {
+  const res = await api(`/accounts/${accountId}/refresh-log`);
+  const rows = res?.data || [];
+  const body = rows.length
+    ? `<div style="max-height:340px;overflow:auto">
+        ${rows.map(r => `<div style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--border);font-size:12.5px">
+          <span style="color:${r.ok ? 'var(--success)' : 'var(--danger)'};flex-shrink:0">${r.ok ? t('成功') : t('失败')}</span>
+          <span style="color:var(--text-dim);flex-shrink:0">${formatShortTime(r.created_at)}</span>
+          <span style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.message || '')}</span>
+        </div>`).join('')}
+      </div>`
+    : `<div class="empty-state">${t('暂无刷新记录')}</div>`;
+  showModal(t('刷新历史'), body, () => true);
 }
 
 function renderAccountRows(accounts) {
@@ -690,13 +778,25 @@ function goToEmail(accountId) {
 // navigation rather than a fetch that would hold the whole export in memory.
 function exportAccounts(ids) {
   let url = '/accounts/export';
-  if (Array.isArray(ids) && ids.length) url += '?ids=' + ids.join(',');
-  else if (state.accountFilter.group_id) url += '?group_id=' + state.accountFilter.group_id;
+  if (Array.isArray(ids) && ids.length) {
+    url += '?ids=' + ids.join(',');
+  } else {
+    // No explicit ids: export exactly what the table is currently showing.
+    const f = state.accountFilter;
+    const params = new URLSearchParams();
+    if (f.group_id) params.set('group_id', f.group_id);
+    if (f.tag_id) params.set('tag_id', f.tag_id);
+    if (f.status) params.set('status', f.status);
+    if (f.keyword) params.set('keyword', f.keyword);
+    const qs = params.toString();
+    if (qs) url += '?' + qs;
+  }
   window.location.href = API + url;
 }
 
 // Export currently selected accounts (from the batch bar)
 function exportSelected() {
+  if (state.selectAllMatching) { exportAccounts(); return; }
   const ids = [...selectedAccountIds];
   if (!ids.length) { toast(t('请先选择账号'), 'error'); return; }
   exportAccounts(ids);
@@ -723,21 +823,58 @@ function toggleSelectAll(checked) {
 
 function clearSelection() {
   selectedAccountIds.clear();
+  state.selectAllMatching = false;
   document.querySelectorAll('.acc-check').forEach(cb => { cb.checked = false; });
   if (document.getElementById('selectAll')) document.getElementById('selectAll').checked = false;
   updateBatchBar();
 }
 
+// "Select all N matches": the batch bar switches from an explicit id set to the
+// current filter, which the server expands at execution time. Keeps thousands of
+// ids out of the browser entirely.
+function selectAllMatching() {
+  state.selectAllMatching = true;
+  updateBatchBar();
+}
+
+// Payload for the batch endpoint: either the ticked ids or the active filter.
+function batchPayload(action, extra) {
+  const body = Object.assign({ action }, extra || {});
+  if (state.selectAllMatching) {
+    const f = state.accountFilter;
+    body.filter = {
+      group_id: f.group_id ? Number(f.group_id) : undefined,
+      tag_id: f.tag_id ? Number(f.tag_id) : undefined,
+      keyword: f.keyword || undefined,
+      status: f.status || undefined,
+    };
+  } else {
+    body.ids = [...selectedAccountIds];
+  }
+  return JSON.stringify(body);
+}
+
 function updateBatchBar() {
   const bar = document.getElementById('batchBar');
   if (!bar) return;
-  const count = selectedAccountIds.size;
+  const matching = state.selectAllMatching;
+  const count = matching ? state.accountPage.total : selectedAccountIds.size;
   const hasSelection = count > 0;
 
-  // Update count text
   const countSpan = document.getElementById('batchCount');
   if (countSpan) {
-    countSpan.textContent = hasSelection ? t('已选 {n} 个', { n: count }) : t('未选中');
+    countSpan.textContent = matching
+      ? t('已选全部 {n} 个匹配项', { n: count })
+      : (hasSelection ? t('已选 {n} 个', { n: count }) : t('未选中'));
+  }
+
+  // Offer "select all matches" once the user has ticked something and there are
+  // more matches than the page they are looking at.
+  const allBtn = document.getElementById('btnSelectAllMatching');
+  if (allBtn) {
+    const show = !matching && selectedAccountIds.size > 0 && state.accountPage.total > selectedAccountIds.size;
+    allBtn.style.display = show ? '' : 'none';
+    allBtn.textContent = t('选择全部 {n} 个匹配项', { n: state.accountPage.total });
   }
 
   // Enable/disable all batch action buttons based on selection state
@@ -746,15 +883,19 @@ function updateBatchBar() {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = !hasSelection;
   });
+
+  // Testing runs against Graph one account at a time, so it stays page-bound.
+  const testBtn = document.getElementById('btnBatchTest');
+  if (testBtn && matching) testBtn.disabled = true;
 }
 
 async function batchAction(action) {
-  const ids = [...selectedAccountIds];
-  if (!ids.length) return;
+  const count = state.selectAllMatching ? state.accountPage.total : selectedAccountIds.size;
+  if (!count) return;
 
   if (action === 'delete') {
-    if (!confirm(t('确认批量删除 {n} 个账号？此操作不可撤销。', { n: ids.length }))) return;
-    const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'delete', ids }) });
+    if (!confirm(t('确认批量删除 {n} 个账号？此操作不可撤销。', { n: count }))) return;
+    const res = await api('/accounts/batch', { method: 'POST', body: batchPayload('delete') });
     if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); }
     else toast(res?.error?.message || t('操作失败'), 'error');
     return;
@@ -766,7 +907,7 @@ async function batchAction(action) {
       <select class="form-select" id="batchMoveGroup">${state.groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>
     `, async () => {
       const groupId = parseInt(document.getElementById('batchMoveGroup').value);
-      const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action: 'move', ids, group_id: groupId }) });
+      const res = await api('/accounts/batch', { method: 'POST', body: batchPayload('move', { group_id: groupId }) });
       if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); return true; }
       toast(res?.error?.message || t('操作失败'), 'error'); return false;
     });
@@ -774,7 +915,7 @@ async function batchAction(action) {
   }
 
   // enable / disable
-  const res = await api('/accounts/batch', { method: 'POST', body: JSON.stringify({ action, ids }) });
+  const res = await api('/accounts/batch', { method: 'POST', body: batchPayload(action) });
   if (res?.success) { toast(res.message); clearSelection(); navigate('accounts'); }
   else toast(res?.error?.message || t('操作失败'), 'error');
 }
@@ -1853,6 +1994,33 @@ function formatDate(dateStr) {
     if (isToday) return d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' });
     return d.toLocaleDateString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
   } catch { return dateStr; }
+}
+
+// SQLite hands back UTC as 'YYYY-MM-DD HH:MM:SS'. Make the zone explicit before
+// parsing, otherwise Safari reads it as local time. Epoch milliseconds and full
+// ISO strings are passed through as-is.
+function parseUtc(value) {
+  if (!value) return null;
+  if (typeof value === 'number') return new Date(value);
+  const s = String(value);
+  const d = s.includes('T') ? new Date(s) : new Date(s.replace(' ', 'T') + 'Z');
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Same shape SQLite's CURRENT_TIMESTAMP produces, so string comparison works.
+function utcNowStr() {
+  return new Date().toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function formatShortTime(sqliteTime) {
+  const d = parseUtc(sqliteTime);
+  if (!d) return sqliteTime || '';
+  const locale = LANG === 'en' ? 'en-US' : 'zh-CN';
+  return (
+    d.toLocaleDateString(locale, { month: '2-digit', day: '2-digit' }) +
+    ' ' +
+    d.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+  );
 }
 
 // ========== Sidebar Toggle ==========

@@ -300,6 +300,89 @@ describe('accounts api', () => {
     expect(body.data[0]!.remark).toBeUndefined();
     expect(body.data[0]!.created_at).toBeUndefined();
   });
+
+  it('sorts the account list by a whitelisted column', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    const auth = { 'Content-Type': 'application/json', Cookie: cookie };
+    for (const email of ['c@x.com', 'a@x.com', 'b@x.com']) {
+      await app.request(
+        '/api/accounts',
+        { ...json({ email, client_id: 'c', refresh_token: 'r' }), headers: auth },
+        env as never
+      );
+    }
+
+    const asc = (await (
+      await app.request('/api/accounts?sort=email&order=asc', { headers: { Cookie: cookie } }, env as never)
+    ).json()) as { data: { items: { email: string }[] } };
+    expect(asc.data.items.map((a) => a.email)).toEqual(['a@x.com', 'b@x.com', 'c@x.com']);
+
+    // An unknown sort key falls back to the default instead of reaching the SQL.
+    const bogus = await app.request(
+      '/api/accounts?sort=email%3BDROP+TABLE&order=asc',
+      { headers: { Cookie: cookie } },
+      env as never
+    );
+    expect(bogus.status).toBe(200);
+    expect((await bogus.json()) as { data: { total: number } }).toBeTruthy();
+  });
+
+  it('batch action can target every account matching a filter', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    const auth = { 'Content-Type': 'application/json', Cookie: cookie };
+    for (const email of ['a@x.com', 'b@x.com', 'c@x.com']) {
+      await app.request(
+        '/api/accounts',
+        { ...json({ email, client_id: 'c', refresh_token: 'r' }), headers: auth },
+        env as never
+      );
+    }
+    env.repo.accounts.update(1, { status: 'error' });
+
+    const res = await app.request(
+      '/api/accounts/batch',
+      { ...json({ action: 'disable', filter: { status: 'error' } }), headers: auth },
+      env as never
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { data: { count: number } }).data.count).toBe(1);
+    expect(env.repo.accounts.get(1)!.status).toBe('disabled');
+    // The other two are untouched.
+    expect(env.repo.accounts.get(2)!.status).toBe('active');
+  });
+
+  it('reports scheduler state and refresh history', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    await app.request(
+      '/api/accounts',
+      {
+        ...json({ account_string: 'a@x.com----p----c----r' }),
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      },
+      env as never
+    );
+
+    env.repo.refreshLog.addMany([
+      { accountId: 1, ok: true },
+      { accountId: 1, ok: false, message: 'invalid_grant' },
+    ]);
+
+    const status = (await (
+      await app.request('/api/status', { headers: { Cookie: cookie } }, env as never)
+    ).json()) as { data: { refresh: { due: number }; log: { ok: number; failed: number } } };
+    expect(status.data.refresh.due).toBe(1);
+    expect(status.data.log.ok).toBe(1);
+    expect(status.data.log.failed).toBe(1);
+
+    const log = (await (
+      await app.request('/api/accounts/1/refresh-log', { headers: { Cookie: cookie } }, env as never)
+    ).json()) as { data: { ok: number; message: string }[] };
+    expect(log.data).toHaveLength(2);
+    expect(log.data[0]!.message).toBe('invalid_grant');
+  });
 });
 
 describe('groups & tags', () => {

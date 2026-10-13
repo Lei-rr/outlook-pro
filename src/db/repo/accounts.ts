@@ -38,6 +38,7 @@ export interface AccountListRow {
   status: string;
   last_refreshed_at: string;
   last_refresh_error: string;
+  next_refresh_at: string;
   refresh_fail_count: number;
   created_at: string;
   updated_at: string;
@@ -70,6 +71,16 @@ export interface AccountOption {
   email: string;
   status: string;
 }
+
+// Whitelist for the list's ORDER BY. Anything unknown falls back to created_at,
+// so a client-supplied string never reaches the SQL.
+const SORT_COLUMNS: Record<string, string> = {
+  created: 'a.created_at',
+  email: 'a.email',
+  status: 'a.status',
+  refreshed: 'a.last_refreshed_at',
+  fails: 'a.refresh_fail_count',
+};
 
 // Shared WHERE/JOIN builder for the account list queries.
 function buildFilter(filter: AccountFilter) {
@@ -117,7 +128,7 @@ export function accountsRepo({ db, key }: Ctx) {
   // Walks the table by id and yields the export in chunks. Building the whole file
   // in one string blocked the event loop for the entire request; this keeps memory
   // flat and lets queued requests run between chunks.
-  async function* exportLines(opts: { groupId?: number; ids?: number[] }): AsyncGenerator<string> {
+  async function* exportLines(opts: { filter?: AccountFilter; ids?: number[] }): AsyncGenerator<string> {
     if (opts.ids?.length) {
       const stmt = db.prepare('SELECT id, email, password, client_id, refresh_token FROM accounts WHERE id = ?');
       for (let i = 0; i < opts.ids.length; i += EXPORT_CHUNK) {
@@ -132,16 +143,17 @@ export function accountsRepo({ db, key }: Ctx) {
       return;
     }
 
+    // Same filters as the table, so "export what I am looking at" means the same
+    // thing on both sides.
+    const { join, where, params } = buildFilter(opts.filter ?? {});
     const stmt = db.prepare(
-      opts.groupId
-        ? 'SELECT id, email, password, client_id, refresh_token FROM accounts WHERE id > ? AND group_id = ? ORDER BY id LIMIT ?'
-        : 'SELECT id, email, password, client_id, refresh_token FROM accounts WHERE id > ? ORDER BY id LIMIT ?'
+      `SELECT a.id, a.email, a.password, a.client_id, a.refresh_token
+       FROM accounts a${join}${where ? `${where} AND` : ' WHERE'} a.id > ?
+       ORDER BY a.id LIMIT ?`
     );
     let cursor = 0;
     for (;;) {
-      const rows = (
-        opts.groupId ? stmt.all(cursor, opts.groupId, EXPORT_CHUNK) : stmt.all(cursor, EXPORT_CHUNK)
-      ) as ExportRow[];
+      const rows = stmt.all(...params, cursor, EXPORT_CHUNK) as ExportRow[];
       if (!rows.length) return;
       cursor = rows[rows.length - 1]!.id;
       yield rows.map(exportLine).join('\n') + '\n';
@@ -152,22 +164,51 @@ export function accountsRepo({ db, key }: Ctx) {
   return {
     // One page of the table listing. Secret columns are deliberately not read:
     // the UI only ever shows them masked, so decrypting ~24k AES fields per
-    // request would be pure waste.
-    listForTable(filter: AccountFilter = {}, page: { limit: number; offset: number }): AccountPage {
+    // request would be pure waste. `id` is always the tiebreaker so that paging
+    // through equal sort values can neither repeat nor drop rows.
+    listForTable(
+      filter: AccountFilter = {},
+      page: { limit: number; offset: number; sort?: string; order?: string }
+    ): AccountPage {
       const { join, where, params } = buildFilter(filter);
+      const column = SORT_COLUMNS[page.sort ?? ''] ?? SORT_COLUMNS.created;
+      const dir = page.order === 'asc' ? 'ASC' : 'DESC';
       const total = (
         db.prepare(`SELECT COUNT(*) AS c FROM accounts a${join}${where}`).get(...params) as { c: number }
       ).c;
       const items = db
         .prepare(
           `SELECT a.id, a.email, a.group_id, a.remark, a.status, a.last_refreshed_at,
-                  a.last_refresh_error, a.refresh_fail_count, a.created_at, a.updated_at,
+                  a.last_refresh_error, a.next_refresh_at, a.refresh_fail_count,
+                  a.created_at, a.updated_at,
                   g.name AS group_name, g.color AS group_color
            FROM accounts a LEFT JOIN groups g ON a.group_id = g.id${join}${where}
-           ORDER BY a.created_at DESC LIMIT ? OFFSET ?`
+           ORDER BY ${column} ${dir}, a.id ${dir} LIMIT ? OFFSET ?`
         )
         .all(...params, page.limit, page.offset) as AccountListRow[];
       return { items, total };
+    },
+
+    // Ids of every row matching the filter, for "apply to all N matches".
+    idsMatching(filter: AccountFilter = {}): number[] {
+      const { join, where, params } = buildFilter(filter);
+      return (db.prepare(`SELECT a.id FROM accounts a${join}${where}`).all(...params) as { id: number }[]).map(
+        (r) => r.id
+      );
+    },
+
+    // How many accounts the next refresh run would consider.
+    countDue(cutoffIso: string): number {
+      return (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS c FROM accounts
+             WHERE status != 'disabled'
+               AND (last_refreshed_at = '' OR last_refreshed_at < ?)
+               AND (next_refresh_at = '' OR next_refresh_at <= CURRENT_TIMESTAMP)`
+          )
+          .get(cutoffIso) as { c: number }
+      ).c;
     },
 
     // Whole-set id/email/status list for the mail page's account picker, which

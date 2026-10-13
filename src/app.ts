@@ -11,6 +11,7 @@ import externalRoutes from './routes/external.js';
 import groupRoutes from './routes/groups.js';
 import oauthRoutes from './routes/oauth.js';
 import settingRoutes from './routes/settings.js';
+import statusRoutes from './routes/status.js';
 import tagRoutes from './routes/tags.js';
 import type { AppEnv } from './types.js';
 
@@ -51,6 +52,7 @@ export function createApp(): Hono<AppEnv> {
   app.route('/api/accounts', accountRoutes);
   app.route('/api/accounts/:id/emails', emailRoutes);
   app.route('/api/settings', settingRoutes);
+  app.route('/api/status', statusRoutes);
 
   // Static frontend.
   app.use('/*', serveStatic({ root: publicDir }));

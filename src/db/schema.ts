@@ -100,6 +100,22 @@ ALTER TABLE accounts ADD COLUMN next_refresh_at TEXT DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_accounts_email_lower ON accounts(lower(email));
 `,
   },
+  {
+    version: 4,
+    up: `
+-- Every refresh attempt, so "has this account been flapping?" is answerable.
+-- The refresh job prunes rows older than 30 days once per run.
+CREATE TABLE IF NOT EXISTS refresh_log (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL,
+  ok         INTEGER NOT NULL,
+  message    TEXT DEFAULT '',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_log_account ON refresh_log(account_id, id DESC);
+`,
+  },
 ];
 
 // Applies every migration newer than PRAGMA user_version, each in its own

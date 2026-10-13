@@ -20,7 +20,12 @@ accounts.get('/', (c) => {
       tagId: c.req.query('tag_id') ? Number(c.req.query('tag_id')) : undefined,
       status: c.req.query('status') || undefined,
     },
-    { limit: pageSize, offset: (page - 1) * pageSize }
+    {
+      limit: pageSize,
+      offset: (page - 1) * pageSize,
+      sort: c.req.query('sort') || undefined,
+      order: c.req.query('order') || undefined,
+    }
   );
 
   const tags = c.env.repo.tags.forAccounts(items.map((r) => r.id));
@@ -101,7 +106,12 @@ accounts.post('/', async (c) => {
 // instead of assembled into one JSON string: a full export decrypts thousands of
 // rows, and doing that in a single synchronous pass stalled every other request.
 accounts.get('/export', (c) => {
-  const groupId = c.req.query('group_id') ? Number(c.req.query('group_id')) : undefined;
+  const filter = {
+    groupId: c.req.query('group_id') ? Number(c.req.query('group_id')) : undefined,
+    tagId: c.req.query('tag_id') ? Number(c.req.query('tag_id')) : undefined,
+    status: c.req.query('status') || undefined,
+    keyword: c.req.query('keyword') || undefined,
+  };
   const idsParam = c.req.query('ids');
   const ids = idsParam
     ? idsParam
@@ -117,7 +127,7 @@ accounts.get('/export', (c) => {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        for await (const chunk of exportLines({ groupId, ids })) {
+        for await (const chunk of exportLines({ filter, ids })) {
           controller.enqueue(encoder.encode(chunk));
         }
         controller.close();
@@ -136,12 +146,13 @@ accounts.get('/export', (c) => {
 });
 
 accounts.post('/batch', async (c) => {
+  const { repo } = c.env;
   const body = (await c.req.json().catch(() => ({}))) as {
     action?: string;
     ids?: number[];
+    filter?: { group_id?: number; tag_id?: number; keyword?: string; status?: string };
     group_id?: number;
   };
-  if (!body.ids?.length) return badRequest('请选择账号');
 
   const actions: Record<string, 'delete' | 'move' | 'enable' | 'disable'> = {
     delete: 'delete',
@@ -153,11 +164,24 @@ accounts.post('/batch', async (c) => {
   if (!action) return badRequest('未知操作');
   if (action === 'move' && body.group_id === undefined) return badRequest('缺少目标分组');
 
-  c.env.repo.accounts.batch(body.ids, action, body.group_id);
+  // Either an explicit id list (rows ticked in the table) or a filter, which is
+  // what "select all N matches" sends. Expanding the filter server-side keeps the
+  // browser from ever holding thousands of ids.
+  const ids = body.filter
+    ? repo.accounts.idsMatching({
+        groupId: body.filter.group_id,
+        tagId: body.filter.tag_id,
+        keyword: body.filter.keyword,
+        status: body.filter.status,
+      })
+    : (body.ids ?? []).filter(Number.isInteger);
+  if (!ids.length) return badRequest('请选择账号');
+
+  repo.accounts.batch(ids, action, body.group_id);
   // Deleted ids must not keep serving a cached access token.
   if (action === 'delete') invalidateTokenCache();
   const labels = { delete: '删除', move: '移动', enable: '启用', disable: '停用' };
-  return ok(null, `已${labels[action]} ${body.ids.length} 个账号`);
+  return ok({ count: ids.length }, `已${labels[action]} ${ids.length} 个账号`);
 });
 
 accounts.get('/:id', (c) => {
@@ -195,6 +219,13 @@ accounts.get('/:id/password', (c) => {
   const acc = c.env.repo.accounts.get(Number(c.req.param('id')));
   if (!acc) return notFound('账号不存在');
   return ok({ password: acc.password });
+});
+
+// Refresh history for one account, newest first.
+accounts.get('/:id/refresh-log', (c) => {
+  const id = Number(c.req.param('id'));
+  if (!c.env.repo.accounts.get(id)) return notFound('账号不存在');
+  return ok(c.env.repo.refreshLog.forAccount(id, 20));
 });
 
 accounts.put('/:id', async (c) => {
