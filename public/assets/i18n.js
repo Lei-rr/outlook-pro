@@ -222,6 +222,7 @@ var I18N_EN = {
   '点击选择 / 输入关键字筛选账号': 'Click to pick / type to filter accounts',
   '展开账号列表': 'Show account list',
   '无匹配账号': 'No matching accounts',
+  '还有 {n} 个匹配，继续输入以缩小范围': '{n} more matches - keep typing to narrow it down',
   '复制当前邮箱地址': 'Copy the current email address',
   '收件箱': 'Inbox',
   '垃圾箱': 'Junk',

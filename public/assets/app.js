@@ -1082,7 +1082,6 @@ async function renderEmails(el) {
     return;
   }
 
-  const activeAccounts = state.accounts.filter(a => a.status !== 'disabled');
   // Toolbar groups follow scan order: left = pick the mailbox (select + copy its
   // address), divider, right = act within it (folder, search, refresh).
   const copyIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/></svg>';
@@ -1094,10 +1093,7 @@ async function renderEmails(el) {
           <input class="search-input" id="emailAccountInput" style="width:100%;padding-right:32px" placeholder="${t('点击选择 / 输入关键字筛选账号')}" autocomplete="off"
             onfocus="openAccountCombo(this)" onclick="clickAccountCombo(this)" oninput="filterAccountCombo(this.value)" onkeydown="accountComboKeydown(event)">
           <button class="combo-arrow" type="button" title="${t('展开账号列表')}" onclick="toggleAccountCombo()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="6 9 12 15 18 9"/></svg></button>
-          <div class="combo-list" id="accountComboList" style="display:none">
-            ${activeAccounts.map(a => `<div class="combo-item" data-id="${a.id}" data-email="${esc(a.email.toLowerCase())}" onclick="pickAccountComboEl(this)">${esc(a.email)}</div>`).join('')}
-            <div class="combo-empty" style="display:none">${t('无匹配账号')}</div>
-          </div>
+          <div class="combo-list" id="accountComboList" style="display:none"></div>
         </div>
         <button class="btn" onclick="copySelectedEmail(this)" title="${t('复制当前邮箱地址')}" style="display:inline-flex;align-items:center;gap:6px">${copyIcon}<span class="btn-label">${t('复制')}</span></button>
         <span class="vr"></span>
@@ -1159,19 +1155,39 @@ function toggleAccountCombo() {
   }
 }
 
-function filterAccountCombo(keyword) {
+// The account combo is rendered on demand and capped: with thousands of accounts,
+// building one DOM node per account up front (and re-scanning them on every
+// keystroke) is what made this page crawl. Only the first MAX_COMBO_ITEMS matches
+// are materialised; typing narrows the set.
+const MAX_COMBO_ITEMS = 200;
+
+function renderAccountComboItems(keyword) {
   const list = document.getElementById('accountComboList');
   if (!list) return;
   const kw = (keyword || '').trim().toLowerCase();
-  let visible = 0;
-  list.querySelectorAll('.combo-item').forEach(it => {
-    const hit = !kw || it.dataset.email.includes(kw);
-    it.style.display = hit ? '' : 'none';
-    if (hit) visible++;
-  });
-  const empty = list.querySelector('.combo-empty');
-  if (empty) empty.style.display = visible ? 'none' : '';
+  const matches = state.accounts.filter(
+    (a) => a.status !== 'disabled' && (!kw || String(a.email).toLowerCase().includes(kw))
+  );
+  const shown = matches.slice(0, MAX_COMBO_ITEMS);
+  const more = matches.length - shown.length;
+
+  list.innerHTML =
+    shown
+      .map(
+        (a) =>
+          `<div class="combo-item" data-id="${a.id}" data-email="${esc(String(a.email).toLowerCase())}" onclick="pickAccountComboEl(this)">${esc(a.email)}</div>`
+      )
+      .join('') +
+    (more > 0
+      ? `<div class="combo-more" style="padding:8px 12px;font-size:12px;color:var(--text-dim)">${t('还有 {n} 个匹配，继续输入以缩小范围', { n: more })}</div>`
+      : '') +
+    (matches.length === 0 ? `<div class="combo-empty">${t('无匹配账号')}</div>` : '');
+
   list.style.display = '';
+}
+
+function filterAccountCombo(keyword) {
+  renderAccountComboItems(keyword);
 }
 
 function pickAccountComboEl(el) {
