@@ -1,0 +1,14 @@
+services:
+  outlook:
+    build: .
+    image: ghcr.io/owner/outlook-pro:latest
+    container_name: outlook-pro
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    # 全部可选，按需取消注释：
+    # environment:
+    #   PUBLIC_BASE_URL: https://mail.example.com
+    #   ADMIN_PASSWORD: your-password
