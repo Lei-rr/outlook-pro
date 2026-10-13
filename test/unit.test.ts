@@ -40,10 +40,15 @@ describe('crypto', () => {
 
 describe('session', () => {
   it('roundtrip', () => {
-    const c = issueSession('sec');
-    expect(verifySession(c, 'sec')).toBe(true);
-    expect(verifySession(c, 'nope')).toBe(false);
-    expect(verifySession('garbage', 'sec')).toBe(false);
+    const c = issueSession('sec', 'epoch1');
+    expect(verifySession(c, 'sec', 'epoch1')).toBe(true);
+    expect(verifySession(c, 'nope', 'epoch1')).toBe(false);
+    expect(verifySession('garbage', 'sec', 'epoch1')).toBe(false);
+  });
+
+  it('rejects a cookie issued under an older epoch', () => {
+    const c = issueSession('sec', 'epoch1');
+    expect(verifySession(c, 'sec', 'epoch2')).toBe(false);
   });
 });
 

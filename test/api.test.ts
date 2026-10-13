@@ -51,6 +51,57 @@ describe('auth flow', () => {
     expect(body.success).toBe(true);
     expect(body.data).toEqual([]);
   });
+
+  it('throttles repeated failed logins from one IP', async () => {
+    const { app, env } = setup();
+    const attempt = (password: string) =>
+      app.request(
+        '/api/auth/login',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-forwarded-for': '10.9.9.9' },
+          body: JSON.stringify({ password }),
+        },
+        env as never
+      );
+
+    for (let i = 0; i < 5; i++) {
+      expect((await attempt('wrong')).status).toBe(400);
+    }
+    expect((await attempt('wrong')).status).toBe(429);
+    // The correct password is refused too while the IP is locked out.
+    expect((await attempt('admin')).status).toBe(429);
+  });
+
+  it('keeps the session epoch out of the settings payload', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    const res = await app.request('/api/settings', { headers: { Cookie: cookie } }, env as never);
+    const body = (await res.json()) as { data: Record<string, unknown> };
+    expect(body.data.login_password).toBe('******');
+    expect(body.data.session_epoch).toBeUndefined();
+  });
+
+  it('invalidates issued cookies when the password changes', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    const before = await app.request('/api/accounts', { headers: { Cookie: cookie } }, env as never);
+    expect(before.status).toBe(200);
+
+    const changed = await app.request(
+      '/api/settings',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({ login_password: 'newpass' }),
+      },
+      env as never
+    );
+    expect(changed.status).toBe(200);
+
+    const after = await app.request('/api/accounts', { headers: { Cookie: cookie } }, env as never);
+    expect(after.status).toBe(401);
+  });
 });
 
 describe('accounts api', () => {
@@ -79,6 +130,14 @@ describe('accounts api', () => {
     const statsBody = (await stats.json()) as { data: { total: number; status: Record<string, number> } };
     expect(statsBody.data.total).toBe(1);
     expect(statsBody.data.status.active).toBe(1);
+
+    // A failed refresh stores the reason, and the list surfaces it for the UI.
+    env.repo.accounts.markError(accountId, 'token 已过期');
+    const errList = (await (
+      await app.request('/api/accounts', { headers: auth }, env as never)
+    ).json()) as { data: { status: string; last_refresh_error: string }[] };
+    expect(errList.data[0]!.status).toBe('error');
+    expect(errList.data[0]!.last_refresh_error).toBe('token 已过期');
 
     // Detail payload must not carry the plaintext password; the token stays masked.
     const detail = await app.request(`/api/accounts/${accountId}`, { headers: auth }, env as never);

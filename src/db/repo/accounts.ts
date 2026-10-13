@@ -36,6 +36,7 @@ export interface AccountListRow {
   remark: string;
   status: string;
   last_refreshed_at: string;
+  last_refresh_error: string;
   refresh_fail_count: number;
   created_at: string;
   updated_at: string;
@@ -97,7 +98,7 @@ export function accountsRepo({ db, key }: Ctx) {
       return db
         .prepare(
           `SELECT a.id, a.email, a.group_id, a.remark, a.status, a.last_refreshed_at,
-                  a.refresh_fail_count, a.created_at, a.updated_at,
+                  a.last_refresh_error, a.refresh_fail_count, a.created_at, a.updated_at,
                   g.name AS group_name, g.color AS group_color
            FROM accounts a LEFT JOIN groups g ON a.group_id = g.id${join}${where}
            ORDER BY a.created_at DESC`

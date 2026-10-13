@@ -29,6 +29,8 @@ settings.get('/', (c) => {
   const data: Record<string, string> = {};
   for (const [key, value] of Object.entries(c.env.repo.settings.all())) {
     if (key === 'login_password_hash') data.login_password = '******';
+    // Internal bookkeeping for session invalidation; not part of the UI.
+    else if (key === 'session_epoch') continue;
     else if (SECRET_KEYS.has(key)) data[key] = value ? maskToken(value) : '';
     else data[key] = value;
   }
@@ -75,6 +77,8 @@ settings.put('/', async (c) => {
     const pwd = String(body.login_password).trim();
     if (pwd.length < 4) return badRequest('密码长度至少为 4 位');
     repo.settings.set('login_password_hash', hashPassword(pwd));
+    // Rotating the epoch signs out every cookie issued with the old password.
+    repo.settings.set('session_epoch', randomHex(16));
     updated.push('登录密码');
   }
 

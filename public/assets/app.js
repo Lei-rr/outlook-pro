@@ -548,6 +548,13 @@ function accTurnPage(delta) {
   renderAccountsTable();
 }
 
+// Status badge plus, when a refresh failed, the reason the backend recorded.
+function statusCellHtml(a) {
+  const err = a.status === 'error' ? a.last_refresh_error || '' : '';
+  if (!err) return `<span class="badge badge-${a.status}">${a.status}</span>`;
+  return `<span class="badge badge-${a.status}" title="${esc(err)}">${a.status}</span><div class="err-hint" title="${esc(err)}">${esc(err)}</div>`;
+}
+
 function renderAccountRows(accounts) {
   return accounts.map(a => `<tr>
     <td><input type="checkbox" class="acc-check" value="${a.id}" onchange="onAccountCheck(this)" ${selectedAccountIds.has(a.id) ? 'checked' : ''}></td>
@@ -559,7 +566,7 @@ function renderAccountRows(accounts) {
       ${tagBadgesHtml(a.tags)}
     </td>
     <td><span class="color-dot" style="background:${esc(a.group_color)}"></span>${esc(a.group_name)}</td>
-    <td><span class="badge badge-${a.status}">${a.status}</span></td>
+    <td>${statusCellHtml(a)}</td>
     <td style="color:var(--text-muted);max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.remark)}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-sm" onclick="showEditAccountModal(${a.id})">${t('编辑')}</button>
@@ -1762,11 +1769,14 @@ function tagBadgesHtml(tags) {
 }
 
 // ========== Utilities ==========
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+// Plain string replacement rather than a throwaway DOM node: this runs thousands
+// of times per render, and createElement + textContent + innerHTML costs a layout
+// round trip each time.
 function esc(str) {
   if (str == null) return '';
-  const d = document.createElement('div');
-  d.textContent = String(str);
-  return d.innerHTML;
+  return String(str).replace(/[&<>"']/g, (ch) => ESCAPES[ch]);
 }
 
 function formatDate(dateStr) {

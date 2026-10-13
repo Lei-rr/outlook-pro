@@ -3,20 +3,23 @@ import { hmacSign, hmacVerify } from './crypto.js';
 const COOKIE = 'session';
 const MAX_AGE = 7 * 24 * 60 * 60;
 
-export function issueSession(secret: string): string {
+// The payload carries a session epoch that lives in the settings table. Changing
+// the password rotates that epoch, which invalidates every cookie already issued
+// without needing any server-side session store.
+export function issueSession(secret: string, epoch: string): string {
   const exp = Math.floor(Date.now() / 1000) + MAX_AGE;
-  const payload = `admin:${exp}`;
+  const payload = `admin:${epoch}:${exp}`;
   return `${payload}.${hmacSign(payload, secret)}`;
 }
 
-export function verifySession(value: string, secret: string): boolean {
+export function verifySession(value: string, secret: string, epoch: string): boolean {
   const dot = value.lastIndexOf('.');
   if (dot === -1) return false;
   const payload = value.slice(0, dot);
   const sig = value.slice(dot + 1);
   if (!hmacVerify(payload, sig, secret)) return false;
-  const [role, exp] = payload.split(':');
-  if (role !== 'admin') return false;
+  const [role, sessionEpoch, exp] = payload.split(':');
+  if (role !== 'admin' || sessionEpoch !== epoch) return false;
   const expAt = Number.parseInt(exp ?? '', 10);
   return Number.isFinite(expAt) && Date.now() / 1000 < expAt;
 }
