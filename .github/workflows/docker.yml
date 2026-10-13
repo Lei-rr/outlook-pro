@@ -1,9 +1,10 @@
 name: docker
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
+  # 只有发布正式 Release 时才构建并推送镜像
+  release:
+    types: [published]
+  # 保留手动触发，便于调试
   workflow_dispatch:
 
 jobs:
@@ -29,10 +30,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=ref,event=branch
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - uses: docker/build-push-action@v6
         with:
