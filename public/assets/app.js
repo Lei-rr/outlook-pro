@@ -240,7 +240,7 @@ function dashboardDetailCardsHtml(stats, activeCount, errorCount, disabledCount)
         </div>`).join('')}
       ${errorCount > 3 ? `<div style="font-size:11px;color:var(--text-dim)">${t('还有 {n} 个异常账号，', { n: errorCount - 3 })}<a style="cursor:pointer;color:var(--primary)" onclick="goToAccounts('error')">${t('查看全部')}</a></div>` : ''}
     </div>`
-    : `<div style="margin-top:16px;font-size:12.5px;color:var(--success)">${t('✓ 所有账号授权状态正常')}</div>`;
+    : '';
 
   // Per-group bars: color follows each group's own user-assigned color
   const groups = [...state.groups].sort((a, b) => (b.account_count ?? 0) - (a.account_count ?? 0));
@@ -997,7 +997,21 @@ async function testAccount(id, btn) {
   } else {
     toast(res?.data?.error || res?.error?.message || t('连接失败'), 'error');
   }
-  navigate('accounts');
+  applyTestStatus([id], [res]);
+}
+
+// Rewrite only the tested rows after a connection test, so the table keeps its
+// scroll position and selection instead of being re-rendered from scratch.
+function applyTestStatus(ids, results) {
+  const statusOf = new Map(ids.map((id, i) => [id, results[i]?.success && results[i].data?.connected ? 'active' : 'error']));
+  for (const acc of state.accounts) if (statusOf.has(acc.id)) acc.status = statusOf.get(acc.id);
+  for (const acc of accountsView) if (statusOf.has(acc.id)) acc.status = statusOf.get(acc.id);
+
+  const rows = new Map(accountsView.map(a => [a.id, a]));
+  document.getElementById('accountsBody')?.querySelectorAll('tr').forEach(tr => {
+    const acc = rows.get(Number(tr.querySelector('.acc-check')?.value));
+    if (acc && statusOf.has(acc.id)) tr.outerHTML = renderAccountRows([acc]);
+  });
 }
 
 // Batch test connections: cap the burst to keep the server responsive
@@ -1030,8 +1044,7 @@ async function batchTestAccounts() {
     toast(t('{ok} 个成功，{fail} 个失败', { ok: success, fail: failed }), failed > success ? 'error' : 'warning');
   }
 
-  // Refresh the accounts page to reflect any status changes
-  navigate('accounts');
+  applyTestStatus(ids, results);
 }
 
 // Copy API command for a single account (curl example with email pre-filled)
