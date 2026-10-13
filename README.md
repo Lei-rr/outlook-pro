@@ -2,6 +2,9 @@
 
 基于 Node.js 的 Outlook / Hotmail 邮箱管理服务。多账号 Token 保活、邮件读取、Telegram 推送、对外 API，Docker 一键部署。
 
+> 移植自 [roseforyou/cf-outlook-email](https://github.com/roseforyou/cf-outlook-email)（Cloudflare Workers + D1 版本），
+> 改写成 Node.js + SQLite 单容器部署，摆脱 Workers 的子请求数量与执行时长限制，账号规模可以更大。
+
 ## 特性
 
 - **Token 自动续期**：按寿命窗口滚动刷新 + 并发 + 限速 + 失败退避，账号量大也能在过期前完成一轮
@@ -103,6 +106,13 @@ node tools/i18n-check.mjs  # 中英词条覆盖检查
 
 发布 Release 时 CI 会先跑这三项，任一失败都不会构建镜像。
 
+## 来源与致谢
+
+- 上游项目：[**roseforyou/cf-outlook-email**](https://github.com/roseforyou/cf-outlook-email) —— Cloudflare Workers + D1 实现，本项目的界面与业务流程源自它
+- 本项目：[**Lei-rr/outlook-pro**](https://github.com/Lei-rr/outlook-pro) —— Node.js + SQLite 重写，数据库、调度、加密与部署方式均为独立实现
+- 容器镜像：`ghcr.io/lei-rr/outlook-pro:latest`
+- 双方均以 **GPL-3.0-or-later** 发布
+
 ## 许可证
 
-GPL-3.0
+GPL-3.0-or-later
