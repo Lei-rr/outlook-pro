@@ -191,6 +191,7 @@ var I18N_EN = {
   // --- Import modal ---
   '账号数据 (每行一个: 邮箱----密码----client_id----refresh_token)': 'Account data (one per line: email----password----client_id----refresh_token)',
   '请输入账号数据': 'Enter account data first',
+  '覆盖已存在的账号（更新 Token / 密码，并重置为活跃）': 'Overwrite existing accounts (refresh token/password and reactivate)',
   '导入成功': 'Imported',
   '导入失败': 'Import failed',
 
@@ -325,7 +326,7 @@ var SERVER_EN = {
   '密码错误': 'Incorrect password',
   '密码长度至少为 4 位': 'Password must be at least 4 characters',
   '没有解析到有效账号（格式：邮箱----密码----client_id----refresh_token）': 'No valid accounts parsed (format: email----password----client_id----refresh_token)',
-  '没有新账号被添加（可能已存在）': 'No new accounts were added (may already exist)',
+  '没有新账号被添加（可能已存在，可勾选「覆盖已存在的账号」来更新）': 'No new accounts were added (they may already exist - tick "Overwrite existing accounts" to update them)',
   '缺少目标分组': 'Missing target group',
   '未执行': 'Not executed',
   '对外 API 未启用：请在系统设置生成 API Key': 'External API disabled - generate an API Key in Settings',
@@ -390,6 +391,7 @@ var SERVER_EN = {
 // [regex, replacement] where replacement is a string ($1...) or a function.
 var SERVER_EN_PATTERNS = [
   [/^成功添加 (\d+) 个账号$/, 'Added $1 accounts'],
+  [/^已导入 (\d+) 个账号（重复的已更新）$/, 'Imported $1 accounts (duplicates updated)'],
   [/^已删除 (\d+) 个账号$/, 'Deleted $1 accounts'],
   [/^已移动 (\d+) 个账号$/, 'Moved $1 accounts'],
   [/^已启用 (\d+) 个账号$/, 'Enabled $1 accounts'],

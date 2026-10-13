@@ -87,6 +87,19 @@ CREATE TABLE IF NOT EXISTS push_state (
 DROP TABLE IF EXISTS temp_emails;
 `,
   },
+  {
+    version: 3,
+    up: `
+-- Refresh scheduling. Without this a failed account keeps its old
+-- last_refreshed_at, which is the queue's sort key, so it re-enters at the front
+-- of every run and starves healthy accounts out of the batch.
+ALTER TABLE accounts ADD COLUMN next_refresh_at TEXT DEFAULT '';
+
+-- getByEmail filters on lower(email), which the unique index on email cannot
+-- serve: that query was a full table scan (4ms vs 0.14ms over 7916 rows).
+CREATE INDEX IF NOT EXISTS idx_accounts_email_lower ON accounts(lower(email));
+`,
+  },
 ];
 
 // Applies every migration newer than PRAGMA user_version, each in its own

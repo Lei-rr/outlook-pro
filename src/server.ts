@@ -28,6 +28,13 @@ function main(): void {
   const shutdown = (): void => {
     stopScheduler();
     server.close(() => {
+      // Let SQLite refresh its statistics before the connection goes away, so the
+      // query planner keeps choosing the right indexes. Best effort only.
+      try {
+        db.pragma('optimize');
+      } catch {
+        // Never block shutdown on housekeeping.
+      }
       db.close();
       process.exit(0);
     });

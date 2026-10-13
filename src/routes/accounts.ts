@@ -49,6 +49,7 @@ accounts.post('/', async (c) => {
     password?: string;
     group_id?: number;
     remark?: string;
+    overwrite?: boolean;
   };
   const groupId = body.group_id ?? 1;
 
@@ -66,8 +67,13 @@ accounts.post('/', async (c) => {
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
     if (!rows.length) return badRequest('没有解析到有效账号（格式：邮箱----密码----client_id----refresh_token）');
-    const added = repo.accounts.createBulk(rows, groupId);
-    return added > 0 ? ok({ added }, `成功添加 ${added} 个账号`) : badRequest('没有新账号被添加（可能已存在）');
+    const overwrite = body.overwrite === true;
+    const changed = repo.accounts.createBulk(rows, groupId, overwrite);
+    if (changed === 0) return badRequest('没有新账号被添加（可能已存在，可勾选「覆盖已存在的账号」来更新）');
+    return ok(
+      { added: changed, overwrite },
+      overwrite ? `已导入 ${changed} 个账号（重复的已更新）` : `成功添加 ${changed} 个账号`
+    );
   }
 
   const email = body.email?.trim();

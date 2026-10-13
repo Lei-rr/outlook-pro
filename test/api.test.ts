@@ -216,6 +216,70 @@ describe('accounts api', () => {
     expect(filtered.data.items[0]!.id).toBe(1);
   });
 
+  it('re-import can overwrite an existing account', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    const auth = { 'Content-Type': 'application/json', Cookie: cookie };
+
+    await app.request(
+      '/api/accounts',
+      { ...json({ account_string: 'a@x.com----p1----cid1----rt1' }), headers: auth },
+      env as never
+    );
+
+    // Same email, rotated credentials: without the flag the row is skipped.
+    const skipped = await app.request(
+      '/api/accounts',
+      { ...json({ account_string: 'a@x.com----p2----cid2----rt2' }), headers: auth },
+      env as never
+    );
+    expect(skipped.status).toBe(400);
+    expect(env.repo.accounts.get(1)!.refresh_token).toBe('rt1');
+
+    const overwritten = await app.request(
+      '/api/accounts',
+      { ...json({ account_string: 'a@x.com----p2----cid2----rt2', overwrite: true }), headers: auth },
+      env as never
+    );
+    expect(overwritten.status).toBe(200);
+    const acc = env.repo.accounts.get(1)!;
+    expect(acc.refresh_token).toBe('rt2');
+    expect(acc.password).toBe('p2');
+  });
+
+  it('backs a failed account off instead of retrying it every run', async () => {
+    const { app, env } = setup();
+    const cookie = await login(app, env);
+    await app.request(
+      '/api/accounts',
+      {
+        ...json({ account_string: 'f@x.com----p----c----r' }),
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      },
+      env as never
+    );
+
+    const { repo } = env;
+    // A far-future cutoff makes every account eligible, so this isolates the
+    // queue's other conditions.
+    expect(repo.accounts.dueForRefresh('9999-12-31 00:00:00', 10)).toHaveLength(1);
+
+    repo.accounts.markError(1, 'invalid_grant');
+    const row = repo.accounts.get(1)!;
+    expect(row.status).toBe('error');
+    expect(row.refresh_fail_count).toBe(1);
+    // last_refreshed_at is the queue's sort key and has to advance on failure too.
+    expect(row.last_refreshed_at).not.toBe('');
+    // The backoff window keeps the account out of the very next run.
+    expect(row.next_refresh_at).not.toBe('');
+    expect(repo.accounts.dueForRefresh('9999-12-31 00:00:00', 10)).toHaveLength(0);
+
+    // A later success clears the backoff.
+    repo.accounts.markRefreshed(1);
+    expect(repo.accounts.get(1)!.next_refresh_at).toBe('');
+    expect(repo.accounts.dueForRefresh('9999-12-31 00:00:00', 10)).toHaveLength(1);
+  });
+
   it('serves a lightweight option list for pickers', async () => {
     const { app, env } = setup();
     const cookie = await login(app, env);

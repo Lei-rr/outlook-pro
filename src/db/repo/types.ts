@@ -18,6 +18,7 @@ export interface AccountRow {
   last_refreshed_at: string;
   refresh_fail_count: number;
   last_refresh_error: string;
+  next_refresh_at: string;
   created_at: string;
   updated_at: string;
 }

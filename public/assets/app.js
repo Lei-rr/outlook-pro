@@ -957,12 +957,17 @@ function showImportModal() {
   showModal(t('批量导入'), `
     <div class="form-group"><label class="form-label">${t('分组')}</label><select class="form-select" id="mImpGroup">${state.groups.map(g => `<option value="${g.id}">${esc(g.name)}</option>`).join('')}</select></div>
     <div class="form-group"><label class="form-label">${t('账号数据 (每行一个: 邮箱----密码----client_id----refresh_token)')}</label><textarea class="form-textarea" id="mImpData" rows="8" placeholder="email----password----client_id----refresh_token"></textarea></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-muted);cursor:pointer;margin-bottom:14px">
+      <input type="checkbox" id="mImpOverwrite" style="cursor:pointer">
+      <span>${t('覆盖已存在的账号（更新 Token / 密码，并重置为活跃）')}</span>
+    </label>
   `, async () => {
     const data = document.getElementById('mImpData').value.trim();
     if (!data) { toast(t('请输入账号数据'), 'error'); return false; }
     const res = await api('/accounts', { method: 'POST', body: JSON.stringify({
       account_string: data,
       group_id: parseInt(document.getElementById('mImpGroup').value),
+      overwrite: document.getElementById('mImpOverwrite').checked,
     })});
     if (res?.success) { toast(res.message || t('导入成功')); navigate('accounts'); return true; }
     toast(res?.error?.message || t('导入失败'), 'error');

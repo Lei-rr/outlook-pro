@@ -234,13 +234,28 @@ export function accountsRepo({ db, key }: Ctx) {
     },
 
     // One transaction for the whole batch: atomic and far faster than N inserts.
-    createBulk(rows: AccountInput[], groupId: number): number {
+    // `overwrite` turns it into an upsert, which is what a re-import needs once
+    // Microsoft has rotated the refresh tokens. The group is deliberately left
+    // alone: re-importing a file should not silently move existing accounts.
+    createBulk(rows: AccountInput[], groupId: number, overwrite = false): number {
       const stmt = db.prepare(
-        `INSERT OR IGNORE INTO accounts (email, password, client_id, refresh_token, group_id)
-         VALUES (?, ?, ?, ?, ?)`
+        overwrite
+          ? `INSERT INTO accounts (email, password, client_id, refresh_token, group_id)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(email) DO UPDATE SET
+               password = excluded.password,
+               client_id = excluded.client_id,
+               refresh_token = excluded.refresh_token,
+               status = 'active',
+               refresh_fail_count = 0,
+               last_refresh_error = '',
+               next_refresh_at = '',
+               updated_at = CURRENT_TIMESTAMP`
+          : `INSERT OR IGNORE INTO accounts (email, password, client_id, refresh_token, group_id)
+             VALUES (?, ?, ?, ?, ?)`
       );
       const tx = db.transaction((items: AccountInput[]) => {
-        let added = 0;
+        let changed = 0;
         for (const it of items) {
           const info = stmt.run(
             it.email,
@@ -249,9 +264,9 @@ export function accountsRepo({ db, key }: Ctx) {
             enc(it.refresh_token),
             groupId
           );
-          added += info.changes;
+          changed += info.changes;
         }
-        return added;
+        return changed;
       });
       return tx(rows);
     },
@@ -316,11 +331,15 @@ export function accountsRepo({ db, key }: Ctx) {
     },
 
     // Accounts whose token is due for a keep-alive refresh, oldest first.
+    // next_refresh_at holds failed accounts back so a dead token cannot occupy a
+    // slot in every single run while healthy accounts wait.
     dueForRefresh(cutoffIso: string, limit: number): AccountRow[] {
       const rows = db
         .prepare(
           `SELECT * FROM accounts
-           WHERE status != 'disabled' AND (last_refreshed_at = '' OR last_refreshed_at < ?)
+           WHERE status != 'disabled'
+             AND (last_refreshed_at = '' OR last_refreshed_at < ?)
+             AND (next_refresh_at = '' OR next_refresh_at <= CURRENT_TIMESTAMP)
            ORDER BY last_refreshed_at ASC LIMIT ?`
         )
         .all(cutoffIso, limit) as AccountRow[];
@@ -331,22 +350,34 @@ export function accountsRepo({ db, key }: Ctx) {
       if (rotatedToken) {
         db.prepare(
           `UPDATE accounts SET refresh_token = ?, status = 'active', refresh_fail_count = 0,
-             last_refresh_error = '', last_refreshed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             last_refresh_error = '', next_refresh_at = '', last_refreshed_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`
         ).run(enc(rotatedToken), id);
       } else {
         db.prepare(
           `UPDATE accounts SET status = 'active', refresh_fail_count = 0, last_refresh_error = '',
-             last_refreshed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             next_refresh_at = '', last_refreshed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`
         ).run(id);
       }
     },
 
+    // last_refreshed_at doubles as the refresh queue's sort key, so a failure has
+    // to advance it too: leaving it untouched kept the account at the head of the
+    // queue, where it was retried ahead of healthy accounts on every run.
+    // next_refresh_at then applies an exponential backoff - 6h, 12h, 24h, 48h,
+    // 96h, capped at 7 days - so a permanently dead token stops burning quota.
     markError(id: number, message: string): void {
       db.prepare(
-        `UPDATE accounts SET status = 'error', refresh_fail_count = refresh_fail_count + 1,
-           last_refresh_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+        `UPDATE accounts SET
+           status = 'error',
+           refresh_fail_count = refresh_fail_count + 1,
+           last_refresh_error = ?,
+           last_refreshed_at = CURRENT_TIMESTAMP,
+           next_refresh_at = datetime('now', '+' || MIN(168, 6 * (1 << MIN(refresh_fail_count, 5))) || ' hours'),
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`
       ).run(message.slice(0, 500), id);
     },
   };
